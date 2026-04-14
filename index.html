@@ -1,0 +1,51 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>VM Timelock Explorer</title>
+    <link rel="stylesheet" href="styles.css" />
+  </head>
+  <body>
+    <main>
+      <header>
+        <h1>VM Timelock Explorer</h1>
+      </header>
+
+      <section id="wallet-section">
+        <div id="status" class="status status--disconnected">Not connected</div>
+
+        <div id="wallet-list" class="wallet-list" hidden>
+          <p class="wallet-list__label">Choose a wallet:</p>
+          <div id="wallet-buttons" class="wallet-buttons"></div>
+        </div>
+
+        <div id="connected-view" class="connected-view" hidden>
+          <div class="field">
+            <span class="field__label">Wallet</span>
+            <span id="connected-wallet" class="field__value"></span>
+          </div>
+          <div class="field">
+            <span class="field__label">Public key</span>
+            <code id="public-key" class="field__value field__value--mono"></code>
+          </div>
+          <button id="disconnect-btn" class="btn btn--secondary">Disconnect</button>
+        </div>
+
+        <div id="no-wallets" class="empty" hidden>
+          <p>No supported wallet detected.</p>
+          <p>
+            Install
+            <a href="https://phantom.app/" target="_blank" rel="noopener noreferrer">Phantom</a>,
+            <a href="https://solflare.com/" target="_blank" rel="noopener noreferrer">Solflare</a>,
+            or
+            <a href="https://backpack.app/" target="_blank" rel="noopener noreferrer">Backpack</a>
+            to continue.
+          </p>
+        </div>
+      </section>
+    </main>
+
+    <script src="app.js" type="module"></script>
+  </body>
+</html>
