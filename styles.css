@@ -250,6 +250,13 @@ header h1 {
   color: var(--text-dim);
 }
 
+.result-card__action {
+  margin-top: 0.5rem;
+  align-self: flex-start;
+  font-size: 0.85rem;
+  padding: 0.4rem 0.75rem;
+}
+
 .result-card__unlock--locked .result-card__unlock-status {
   color: var(--danger);
 }

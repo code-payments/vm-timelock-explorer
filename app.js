@@ -1,4 +1,10 @@
-import { PublicKey } from "@solana/web3.js";
+import {
+  PublicKey,
+  Transaction,
+  TransactionInstruction,
+  SystemProgram,
+  SYSVAR_RENT_PUBKEY,
+} from "@solana/web3.js";
 import bs58 from "bs58";
 
 // Supported Solana wallets. Each entry describes how to locate the
@@ -276,6 +282,10 @@ const TIMELOCK_STATE = {
   WAITING_FOR_TIMEOUT: 2,
 };
 
+// CodeInstruction discriminators (see code-vm/api/src/instruction.rs).
+// The enum is repr(u8) and starts at Unknown = 0.
+const IX_INIT_UNLOCK = 7;
+
 function findVirtualTimelockAddress(mintB58, authorityB58, ownerB58, lockDuration) {
   const [pda] = PublicKey.findProgramAddressSync(
     [
@@ -363,6 +373,147 @@ async function fetchUnlockState(rpcUrl, ownerB58, timelockAddressB58, vmB58) {
   if (!dataB64) return { pda, exists: false };
   const parsed = parseUnlockStateAccount(base64ToBytes(dataB64));
   return { pda, exists: true, ...parsed };
+}
+
+// Build the InitUnlockIx instruction. Account order and signer/writable
+// flags mirror code-vm/api/src/sdk.rs `timelock_unlock_init`. The instruction
+// body is just the 1-byte discriminator — `InitUnlockIx` is an empty Pod
+// struct, so no trailing args.
+function buildInitUnlockInstruction({ accountOwner, payer, vm, unlockPda }) {
+  return new TransactionInstruction({
+    programId: CODE_VM_PROGRAM_ID,
+    keys: [
+      { pubkey: new PublicKey(accountOwner), isSigner: true, isWritable: true },
+      { pubkey: new PublicKey(payer), isSigner: true, isWritable: true },
+      { pubkey: new PublicKey(vm), isSigner: false, isWritable: true },
+      { pubkey: new PublicKey(unlockPda), isSigner: false, isWritable: true },
+      { pubkey: SystemProgram.programId, isSigner: false, isWritable: false },
+      { pubkey: SYSVAR_RENT_PUBKEY, isSigner: false, isWritable: false },
+    ],
+    data: new Uint8Array([IX_INIT_UNLOCK]),
+  });
+}
+
+// Poll the unlock PDA until it materializes on-chain — that's the actual
+// state change the user is waiting on. We also check the signature status
+// each round so a failed transaction surfaces its error instead of just
+// spinning to timeout.
+async function waitForUnlockStateCreated({
+  rpcUrl,
+  ownerB58,
+  timelockAddress,
+  vmAddress,
+  signature,
+  maxPolls = 60,
+  intervalMs = 1000,
+}) {
+  for (let i = 0; i < maxPolls; i++) {
+    const state = await fetchUnlockState(
+      rpcUrl,
+      ownerB58,
+      timelockAddress,
+      vmAddress,
+    );
+    if (state.exists) return state;
+
+    const resp = await rpcCall(rpcUrl, "getSignatureStatuses", [[signature]]);
+    const status = resp?.value?.[0];
+    if (status?.err) {
+      throw new Error(`transaction failed: ${JSON.stringify(status.err)}`);
+    }
+
+    await new Promise((r) => setTimeout(r, intervalMs));
+  }
+  throw new Error("timed out waiting for unlock state to appear");
+}
+
+async function startUnlock(button) {
+  if (!active) return;
+
+  const rpcUrl = els.rpcUrl.value.trim().replace(/\/+$/, "");
+  if (!rpcUrl) {
+    showError("A Solana RPC URL is required to start unlock.");
+    return;
+  }
+
+  const vmAddress = els.vmAddress.value.trim();
+  if (!vmAddress) {
+    showError("VM address is required.");
+    return;
+  }
+
+  const ownerB58 = els.publicKey.textContent;
+
+  showError(null);
+
+  // Disable every "Start Unlock" button on the page — the unlock PDA is
+  // shared across every item in the current search, so one click covers
+  // all cards.
+  const actionButtons = Array.from(
+    document.querySelectorAll(".result-card__action"),
+  );
+  for (const b of actionButtons) b.disabled = true;
+  const originalLabel = button.textContent;
+
+  try {
+    button.textContent = "Preparing…";
+    const vmInfo = await fetchVmInfo(rpcUrl, vmAddress);
+    const timelockAddress = findVirtualTimelockAddress(
+      vmInfo.mint,
+      vmInfo.authority,
+      ownerB58,
+      vmInfo.lockDuration,
+    );
+    const unlockPda = findUnlockAddress(ownerB58, timelockAddress, vmAddress);
+
+    const ix = buildInitUnlockInstruction({
+      accountOwner: ownerB58,
+      payer: ownerB58,
+      vm: vmAddress,
+      unlockPda,
+    });
+
+    const latest = await rpcCall(rpcUrl, "getLatestBlockhash", [
+      { commitment: "confirmed" },
+    ]);
+    const blockhash = latest?.value?.blockhash;
+    if (!blockhash) throw new Error("RPC did not return a blockhash");
+
+    const tx = new Transaction();
+    tx.add(ix);
+    tx.feePayer = new PublicKey(ownerB58);
+    tx.recentBlockhash = blockhash;
+
+    button.textContent = "Awaiting wallet…";
+    if (typeof active.provider.signTransaction !== "function") {
+      throw new Error("wallet does not support signTransaction");
+    }
+    const signed = await active.provider.signTransaction(tx);
+
+    button.textContent = "Sending…";
+    const serialized = signed.serialize();
+    const b64 = bytesToBase64(new Uint8Array(serialized));
+    const signature = await rpcCall(rpcUrl, "sendTransaction", [
+      b64,
+      { encoding: "base64", preflightCommitment: "confirmed" },
+    ]);
+
+    button.textContent = "Waiting for unlock…";
+    await waitForUnlockStateCreated({
+      rpcUrl,
+      ownerB58,
+      timelockAddress,
+      vmAddress,
+      signature,
+    });
+
+    await searchTimelocks();
+  } catch (err) {
+    console.error("Start unlock failed:", err);
+    showError(`Start unlock failed: ${err?.message ?? err}`);
+    button.textContent = originalLabel;
+    for (const b of actionButtons) b.disabled = false;
+  }
 }
 
 // Cache VM-account-derived info within a session so repeated searches on the
@@ -695,6 +846,19 @@ function renderItem(item, vmInfo, unlockState, withdrawReceipts) {
     detail.className = "result-card__unlock-detail";
     detail.textContent = unlockInfo.detail;
     unlockEl.append(status, detail);
+
+    // Offer the "Start Unlock" action when the timelock is still locked —
+    // i.e. we queried the unlock PDA and it doesn't exist yet. Once the
+    // tx lands, the PDA exists and the next search will show "Unlocking".
+    if (unlockState && !unlockState.exists) {
+      const actionBtn = document.createElement("button");
+      actionBtn.className = "btn btn--primary result-card__action";
+      actionBtn.type = "button";
+      actionBtn.textContent = "Start Unlock";
+      actionBtn.addEventListener("click", () => startUnlock(actionBtn));
+      unlockEl.appendChild(actionBtn);
+    }
+
     card.appendChild(unlockEl);
   }
 
