@@ -408,13 +408,9 @@ async function startUnlock(btn, vmAddress) {
 
   const originalHTML = btn.innerHTML;
   btn.disabled = true;
-
-  const card = btn.closest(".result-card");
-  const detail = card?.querySelector(".result-card__unlock-detail");
-  const originalDetail = detail?.textContent;
+  btn.innerHTML = `<svg class="spinner" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12a9 9 0 1 1-6.219-8.56"/></svg>`;
 
   try {
-    if (detail) detail.textContent = "Preparing to unlock account…";
     const vmInfo = await fetchVmInfo(rpcUrl, vmAddress);
     const timelockAddress = findVirtualTimelockAddress(
       vmInfo.mint,
@@ -442,13 +438,11 @@ async function startUnlock(btn, vmAddress) {
     tx.feePayer = new PublicKey(ownerB58);
     tx.recentBlockhash = blockhash;
 
-    if (detail) detail.textContent = "Waiting for user to confirm on Phantom...";
     if (typeof active.provider.signTransaction !== "function") {
       throw new Error("wallet does not support signTransaction");
     }
     const signed = await active.provider.signTransaction(tx);
 
-    if (detail) detail.textContent = "Sending…";
     const serialized = signed.serialize();
     const b64 = bytesToBase64(new Uint8Array(serialized));
     const signature = await rpcCall(rpcUrl, "sendTransaction", [
@@ -456,7 +450,6 @@ async function startUnlock(btn, vmAddress) {
       { encoding: "base64", preflightCommitment: "confirmed" },
     ]);
 
-    if (detail) detail.textContent = "Waiting for transaction to finalize…";
     await waitForUnlockStateCreated({
       rpcUrl,
       ownerB58,
@@ -471,7 +464,6 @@ async function startUnlock(btn, vmAddress) {
     showError(`Unlock failed: ${err?.message ?? err}`);
     btn.innerHTML = originalHTML;
     btn.disabled = false;
-    if (detail) detail.textContent = originalDetail;
   }
 }
 
