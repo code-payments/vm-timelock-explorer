@@ -25,7 +25,7 @@ Before adding a bundler or moving to npm-managed dependencies, confirm with the 
 
 ## Wallet integration
 
-The app uses Phantom exclusively via `getPhantomProvider()`. The UI starts with a "Connect Phantom" button; once connected it shows the wallet info bar (address + SOL balance) and automatically triggers a search. The wallet session is stored in the `active` variable (`{ provider, publicKey }`). If the wallet fires a `disconnect` or `accountChanged` event the session resets to the connect view. SOL balance is polled every 5 seconds while connected (`startSolBalancePolling` / `stopSolBalancePolling`).
+The app uses Phantom exclusively via `getPhantomProvider()`. The UI starts with a "Connect Phantom Wallet" button; once connected it shows the wallet info bar (address + SOL balance) and automatically triggers a search. The wallet session is stored in the `active` variable (`{ provider, publicKey }`). If the wallet fires a `disconnect` or `accountChanged` event the session resets to the connect view. SOL balance is polled every 5 seconds while connected (`startSolBalancePolling` / `stopSolBalancePolling`).
 
 ## Indexer search
 
@@ -42,13 +42,13 @@ This searches across all VMs the indexer tracks — no VM address input is neede
 
 Solana addresses are 32 raw bytes. On the wire they're proto3-JSON-encoded as base64 inside a `{ value: ... }` wrapper; the UI shows them as base58. `addressFromBase58` / `addressToBase58` bridge the two.
 
-Response shape (partial): `{ result, items: [{ account: { balance, nonce }, storage: { memory: { account, index } }, slot, vmAccount: { value } }] }`. A `NOT_FOUND` result or empty `items` renders the empty state. Results are grouped by VM address (`vmGroups` Map) for batched RPC enrichment per VM (vm info, unlock state, withdraw receipts). Results are sorted alphabetically by token name before rendering. Items with zero balance and items with an existing withdraw receipt are filtered out. The results header includes a refresh button to re-run the search; while loading, a spinning refresh icon is shown with a 2-second minimum display time to prevent flash.
+Response shape (partial): `{ result, items: [{ account: { balance, nonce }, storage: { memory: { account, index } }, slot, vmAccount: { value } }] }`. A `NOT_FOUND` result or empty `items` renders the empty state. Results are grouped by VM address (`vmGroups` Map) for batched RPC enrichment per VM (vm info, unlock state, withdraw receipts). Results are sorted alphabetically by token name before rendering. Items with zero balance and items with an existing withdraw receipt are filtered out. Withdraw receipts are checked by deriving a PDA from `(unlockPda, nonce, vm)` via `findWithdrawReceiptAddress` under `vmZ1WUq8SxjBWcaeTCvgJRZbS84R61uniFsQy5YMRTJ`; if the account exists on-chain, the item has already been withdrawn. Receipts are only fetched when the VM's on-chain unlock state is UNLOCKED (state=1). The results header includes a refresh button to re-run the search; while loading, a spinning refresh icon is shown with a 2-second minimum display time to prevent flash.
 
 ## Mint + metadata enrichment (RPC)
 
 When search results exist, the app reads each VM account directly from Solana to display balances in token units instead of raw quarks:
 
-1. `getAccountInfo(vmAddress)` → parse `CodeVmAccount`. The mint lives at bytes `[40, 72)` of the account data (matching `code-vm/idl/code_vm.accounts.hexpat` — 8-byte account header then the `CodeVmAccount` struct starting with `authority` then `mint`).
+1. `getAccountInfo(vmAddress)` → parse `CodeVmAccount` (8-byte account header, then `authority` at [8, 40), `mint` at [40, 72), `lock_duration` at byte 145). Authority and lock duration are also needed for timelock PDA derivation in the unlock flow.
 2. `getTokenSupply(mint)` → decimals.
 3. Derive the Metaplex metadata PDA with `PublicKey.findProgramAddressSync(["metadata", programId, mint], programId)` under `metaqbxxUerdq28cj1RbAWkYQm3ybzjb6a8bt518x1s`, then `getAccountInfo` it. Parse name, symbol, and URI from the `DataV2` borsh layout (length-prefixed strings, null-padded, trimmed) — the borsh parse is inline in `parseMetadataAccount` rather than pulling in `@metaplex-foundation/mpl-token-metadata`.
 4. If a metadata URI exists, fetch the off-chain JSON and extract the `image` field for display in result cards.
@@ -57,9 +57,9 @@ VM info is cached in-memory per VM address (`vmInfoCache`) so repeat searches on
 
 ## Result card rendering
 
-Each result card displays a token image (from off-chain metadata), formatted balance with token name, and a status indicator. The status uses a colored dot: red for Locked, yellow for Unlocking, green for Unlocked, gray for Withdrawn. Unlock/unlocking dates are displayed in the user's locale (e.g. "April 21, 2026 at 3:30 pm") rather than ISO format.
+Each result card displays a token image (from off-chain metadata), formatted balance with token name, and a status indicator. Locked and Unlocking states show a colored status dot (red for Locked, yellow for Unlocking) with detail text. Locked cards display the lock duration in days (e.g. "Funds are locked for 21 days") and an unlock icon button that triggers `startUnlock`. Unlocking cards show the estimated unlock date in en-US locale format (e.g. "April 21, 2026 at 3:30 pm").
 
-Locked cards show an unlock icon button that triggers `startUnlock`. Unlocked cards show a withdraw row: a destination address text input (validated as a 32-byte base58 address) and a send button. The withdraw transaction is not yet implemented — only the UI and input validation are wired up.
+Unlocked cards — including WAITING_FOR_TIMEOUT accounts whose `unlock_at` time has passed — don't show a status dot. Instead they display a withdraw row: a destination address text input (validated as a 32-byte base58 address) and a send button. The withdraw transaction is not yet implemented — only the UI and input validation are wired up. Items with existing withdraw receipts are filtered out entirely and never rendered.
 
 ## Unlock transaction flow
 
