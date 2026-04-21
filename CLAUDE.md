@@ -27,6 +27,8 @@ Before adding a bundler or moving to npm-managed dependencies, confirm with the 
 
 The app uses Phantom exclusively via `getPhantomProvider()`. The UI starts with a "Connect Phantom Wallet" button; once connected it shows the wallet info bar (address + SOL balance) and automatically triggers a search. The wallet session is stored in the `active` variable (`{ provider, publicKey }`). If the wallet fires a `disconnect` or `accountChanged` event the session resets to the connect view. SOL balance is polled every 5 seconds while connected (`startSolBalancePolling` / `stopSolBalancePolling`).
 
+When the wallet's SOL balance drops below `LOW_BALANCE_LAMPORTS` (0.005 SOL), a warning banner (`#low-balance-warning`) appears and all SOL-gated buttons (unlock, send) are disabled. The `currentLamports` variable tracks the latest balance; `hasSufficientSol()` is the single predicate, and `updateSolGatedButtons()` re-evaluates all buttons with `[data-sol-gate=unlock]` plus withdraw send buttons whenever the balance changes.
+
 ## Indexer search
 
 The search calls the indexer's Connect-RPC endpoint:
@@ -57,7 +59,7 @@ VM info is cached in-memory per VM address (`vmInfoCache`) so repeat searches on
 
 ## Result card rendering
 
-Each result card displays a token image (from off-chain metadata), formatted balance with token name, and a status indicator. Locked and Unlocking states show a colored status dot (red for Locked, yellow for Unlocking) with detail text. Locked cards display the lock duration in days (e.g. "Funds are locked for 21 days") and an unlock icon button that triggers `startUnlock`. Unlocking cards show the estimated unlock date in en-US locale format (e.g. "April 21, 2026 at 3:30 pm").
+Each result card (`data-vm`, `data-nonce` attributes for targeted refresh) displays a token image (from off-chain metadata), formatted balance with token name, and a status indicator. Locked and Unlocking states show a colored status dot (red for Locked, yellow for Unlocking) with detail text. Locked cards display the lock duration in days (e.g. "Funds are locked for 21 days") and an unlock icon button (`data-sol-gate="unlock"`) that triggers `startUnlock`. Unlocking cards show the estimated unlock date in en-US locale format (e.g. "April 21, 2026 at 3:30 pm").
 
 Unlocked cards — including WAITING_FOR_TIMEOUT accounts whose `unlock_at` time has passed — don't show a status dot. Instead they display a withdraw row: a destination address text input (validated as a 32-byte base58 address) and a send button. The withdraw transaction is not yet implemented — only the UI and input validation are wired up. Items with existing withdraw receipts are filtered out entirely and never rendered.
 
@@ -69,7 +71,7 @@ Unlocked cards — including WAITING_FOR_TIMEOUT accounts whose `unlock_at` time
 2. Derive the unlock PDA from `(owner, timelockAddress, vm)` via `findUnlockAddress` under `vmZ1WUq8SxjBWcaeTCvgJRZbS84R61uniFsQy5YMRTJ`.
 3. Build the instruction (`IX_INIT_UNLOCK = 7`, 1-byte discriminator, no trailing args). Account order mirrors `sdk.rs timelock_unlock_init`.
 4. Sign via `provider.signTransaction`, send via `sendTransaction` RPC, then poll `waitForUnlockStateCreated` — checks both the unlock PDA account and `getSignatureStatuses` each second for up to 60 attempts.
-5. On success, re-runs `searchTimelocks` to refresh the display. Progress stages ("Preparing…", "Awaiting wallet…", "Sending…", "Waiting for unlock…") are shown in the card's detail text.
+5. On success, calls `refreshCardsForVm` to re-fetch the unlock state and re-render only the cards for that VM (avoids a full `searchTimelocks` round trip). The last search body and per-VM context are retained in `lastSearchBody` / `lastVmContext` so individual cards can be re-rendered without a full refresh. During the unlock the button shows a spinner icon; no progress text is written to the card.
 
 The UnlockStateAccount layout: 8-byte header, then `vm` (32), `owner` (32), `address` (32), `unlock_at` (i64 LE at offset 104), `bump` (u8), `state` (u8 at offset 113). `TIMELOCK_STATE`: 0 = UNKNOWN, 1 = UNLOCKED, 2 = WAITING_FOR_TIMEOUT.
 
