@@ -20,7 +20,7 @@ Before adding a bundler or moving to npm-managed dependencies, confirm with the 
 
 - `index.html` — page structure: wallet info bar (address + SOL balance), connect button, results list, disconnect button
 - `styles.css` — dark theme, CSS custom properties on `:root`. Note the `[hidden] { display: none !important }` override — needed because flex containers (`.search-view`, `.results`) have equal specificity to the UA `[hidden]` rule and would otherwise win.
-- `app.js` — Phantom wallet connection, indexer search, RPC mint + metadata lookup, off-chain metadata fetch, unlock transaction building + submission, result rendering
+- `app.js` — Phantom wallet connection, indexer search, RPC mint + metadata lookup, off-chain metadata fetch, unlock + withdraw transaction building + submission, result rendering
 - `README.md` — local serve + GitHub Pages deploy instructions
 
 ## Wallet integration
@@ -61,7 +61,7 @@ VM info is cached in-memory per VM address (`vmInfoCache`) so repeat searches on
 
 Each result card (`data-vm`, `data-nonce` attributes for targeted refresh) displays a token image (from off-chain metadata), formatted balance with token name, and a status indicator. Locked and Unlocking states show a colored status dot (red for Locked, yellow for Unlocking) with detail text. Locked cards display the lock duration in days (e.g. "Funds are locked for 21 days") and an unlock icon button (`data-sol-gate="unlock"`) that triggers `startUnlock`. Unlocking cards show the estimated unlock date in en-US locale format (e.g. "April 21, 2026 at 3:30 pm").
 
-Unlocked cards — including WAITING_FOR_TIMEOUT accounts whose `unlock_at` time has passed — don't show a status dot. Instead they display a withdraw row: a destination address text input (validated as a 32-byte base58 address) and a send button. The withdraw transaction is not yet implemented — only the UI and input validation are wired up. Items with existing withdraw receipts are filtered out entirely and never rendered.
+Unlocked cards — including WAITING_FOR_TIMEOUT accounts whose `unlock_at` time has passed — don't show a status dot. Instead they display a withdraw row: a destination address text input (validated as a 32-byte base58 address) and a send button that triggers `startWithdraw`. The input listener is guarded so validation stops while a withdraw is in flight (spinner visible). Items with existing withdraw receipts are filtered out entirely and never rendered.
 
 ## Unlock transaction flow
 
@@ -71,9 +71,26 @@ Unlocked cards — including WAITING_FOR_TIMEOUT accounts whose `unlock_at` time
 2. Derive the unlock PDA from `(owner, timelockAddress, vm)` via `findUnlockAddress` under `vmZ1WUq8SxjBWcaeTCvgJRZbS84R61uniFsQy5YMRTJ`.
 3. Build the instruction (`IX_INIT_UNLOCK = 7`, 1-byte discriminator, no trailing args). Account order mirrors `sdk.rs timelock_unlock_init`.
 4. Sign via `provider.signTransaction`, send via `sendTransaction` RPC, then poll `waitForUnlockStateCreated` — checks both the unlock PDA account and `getSignatureStatuses` each second for up to 60 attempts.
-5. On success, calls `refreshCardsForVm` to re-fetch the unlock state and re-render only the cards for that VM (avoids a full `searchTimelocks` round trip). The last search body and per-VM context are retained in `lastSearchBody` / `lastVmContext` so individual cards can be re-rendered without a full refresh. During the unlock the button shows a spinner icon; no progress text is written to the card.
+5. On success, calls `refreshCardsForVm` to re-fetch the unlock state and re-render only the cards for that VM (avoids a full `searchTimelocks` round trip). The last search body and per-VM context are retained in `lastSearchBody` / `lastVmContext` so individual cards can be re-rendered without a full refresh. During the unlock the button shows a spinner icon; no progress text is written to the card. A success banner is shown after completion.
 
 The UnlockStateAccount layout: 8-byte header, then `vm` (32), `owner` (32), `address` (32), `unlock_at` (i64 LE at offset 104), `bump` (u8), `state` (u8 at offset 113). `TIMELOCK_STATE`: 0 = UNKNOWN, 1 = UNLOCKED, 2 = WAITING_FOR_TIMEOUT.
+
+## Withdraw transaction flow
+
+`startWithdraw` builds and submits a withdraw transaction for an unlocked item. The flow:
+
+1. Derive the same timelock and unlock PDAs used in the unlock flow, plus `findVmOmnibusAddress` (seeds: `[CODE_VM_SEED, VM_OMNIBUS_SEED, vm]`) and the withdraw receipt PDA.
+2. Derive the destination's associated token account via `findAssociatedTokenAddress` (standard ATA derivation under `ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL`).
+3. Build the transaction with up to three instructions in order:
+   - `buildCreateAtaIdempotentInstruction` — creates the destination ATA if it doesn't exist (discriminator byte `1` = CreateIdempotent).
+   - `buildUnlockFinalizeInstruction` (`IX_UNLOCK = 15`) — only included when the unlock state is WAITING_FOR_TIMEOUT, to finalize the unlock before withdrawing.
+   - `buildWithdrawFromMemoryInstruction` (`IX_WITHDRAW = 14`, `WithdrawIxData::FromMemory = 0`, followed by a 2-byte little-endian account index). Account order mirrors `sdk.rs timelock_withdraw`.
+4. Sign via `provider.signTransaction`, send via `sendTransaction` RPC, then poll `waitForWithdrawReceiptCreated` — checks both the withdraw receipt PDA and `getSignatureStatuses` each second for up to 60 attempts.
+5. On success, updates `lastVmContext` with the new receipt, removes the card from the DOM, and shows a success banner. On failure, the spinner reverts and an error banner is shown.
+
+## Error and success banners
+
+Error and success feedback uses dynamically created DOM elements (no static HTML). `showError(msg)` creates a `.result-card--error` banner (red-tinted card) and inserts it before the results header; passing `null` removes any existing error banner. `showSuccess(msg)` / `clearSuccess()` work the same way with `.result-card--success` (green-tinted card). Both are cleared on connect-view reset, new searches, and before unlock/withdraw attempts.
 
 ## Balance formatting
 

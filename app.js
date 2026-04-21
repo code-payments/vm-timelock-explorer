@@ -20,7 +20,6 @@ const RPC_URL = "https://solana-rpc.flipcash.com";
 const els = {
   connectBtn: document.getElementById("connect-btn"),
   connectedView: document.getElementById("connected-view"),
-  searchError: document.getElementById("search-error"),
   publicKey: document.getElementById("public-key"),
   solBalance: document.getElementById("sol-balance"),
   results: document.getElementById("results"),
@@ -128,6 +127,7 @@ function showConnectView() {
   els.results.hidden = true;
   els.results.replaceChildren();
   showError(null);
+  clearSuccess();
 }
 
 async function disconnect() {
@@ -274,6 +274,11 @@ const TIMELOCK_STATE = {
 // CodeInstruction discriminators (see code-vm/api/src/instruction.rs).
 // The enum is repr(u8) and starts at Unknown = 0.
 const IX_INIT_UNLOCK = 7;
+const IX_UNLOCK = 15;
+const IX_WITHDRAW = 14;
+const VM_OMNIBUS_SEED = new TextEncoder().encode("vm_omnibus");
+const TOKEN_PROGRAM_ID = new PublicKey("TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA");
+const ASSOCIATED_TOKEN_PROGRAM_ID = new PublicKey("ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL");
 
 function findVirtualTimelockAddress(mintB58, authorityB58, ownerB58, lockDuration) {
   const [pda] = PublicKey.findProgramAddressSync(
@@ -350,6 +355,26 @@ async function fetchWithdrawReceipt(rpcUrl, unlockPdaB58, nonceB58, vmB58) {
   return { pda, exists: Boolean(info?.value) };
 }
 
+function findVmOmnibusAddress(vmB58) {
+  const [pda] = PublicKey.findProgramAddressSync(
+    [CODE_VM_SEED, VM_OMNIBUS_SEED, new PublicKey(vmB58).toBytes()],
+    CODE_VM_PROGRAM_ID,
+  );
+  return pda.toBase58();
+}
+
+function findAssociatedTokenAddress(walletB58, mintB58) {
+  const [pda] = PublicKey.findProgramAddressSync(
+    [
+      new PublicKey(walletB58).toBytes(),
+      TOKEN_PROGRAM_ID.toBytes(),
+      new PublicKey(mintB58).toBytes(),
+    ],
+    ASSOCIATED_TOKEN_PROGRAM_ID,
+  );
+  return pda.toBase58();
+}
+
 async function fetchUnlockState(rpcUrl, ownerB58, timelockAddressB58, vmB58) {
   const pda = findUnlockAddress(ownerB58, timelockAddressB58, vmB58);
   const info = await rpcCall(rpcUrl, "getAccountInfo", [
@@ -380,6 +405,67 @@ function buildInitUnlockInstruction({ accountOwner, payer, vm, unlockPda }) {
       { pubkey: SYSVAR_RENT_PUBKEY, isSigner: false, isWritable: false },
     ],
     data: new Uint8Array([IX_INIT_UNLOCK]),
+  });
+}
+
+function buildUnlockFinalizeInstruction({ accountOwner, payer, vm, unlockPda }) {
+  return new TransactionInstruction({
+    programId: CODE_VM_PROGRAM_ID,
+    keys: [
+      { pubkey: new PublicKey(accountOwner), isSigner: true, isWritable: true },
+      { pubkey: new PublicKey(payer), isSigner: true, isWritable: true },
+      { pubkey: new PublicKey(vm), isSigner: false, isWritable: true },
+      { pubkey: new PublicKey(unlockPda), isSigner: false, isWritable: true },
+    ],
+    data: new Uint8Array([IX_UNLOCK]),
+  });
+}
+
+function buildCreateAtaIdempotentInstruction({ payer, wallet, mint }) {
+  const ata = findAssociatedTokenAddress(wallet, mint);
+  return new TransactionInstruction({
+    programId: ASSOCIATED_TOKEN_PROGRAM_ID,
+    keys: [
+      { pubkey: new PublicKey(payer), isSigner: true, isWritable: true },
+      { pubkey: new PublicKey(ata), isSigner: false, isWritable: true },
+      { pubkey: new PublicKey(wallet), isSigner: false, isWritable: false },
+      { pubkey: new PublicKey(mint), isSigner: false, isWritable: false },
+      { pubkey: SystemProgram.programId, isSigner: false, isWritable: false },
+      { pubkey: TOKEN_PROGRAM_ID, isSigner: false, isWritable: false },
+    ],
+    data: new Uint8Array([1]),
+  });
+}
+
+function buildWithdrawFromMemoryInstruction({
+  depositor, payer, vm, vmOmnibus, vmMemory, unlockPda,
+  withdrawReceipt, externalAddress, accountIndex,
+}) {
+  const data = new Uint8Array(4);
+  data[0] = IX_WITHDRAW;
+  data[1] = 0; // WithdrawIxData::FromMemory
+  data[2] = accountIndex & 0xff;
+  data[3] = (accountIndex >> 8) & 0xff;
+
+  return new TransactionInstruction({
+    programId: CODE_VM_PROGRAM_ID,
+    keys: [
+      { pubkey: new PublicKey(depositor), isSigner: true, isWritable: true },
+      { pubkey: new PublicKey(payer), isSigner: true, isWritable: true },
+      { pubkey: new PublicKey(vm), isSigner: false, isWritable: true },
+      { pubkey: new PublicKey(vmOmnibus), isSigner: false, isWritable: true },
+      { pubkey: new PublicKey(vmMemory), isSigner: false, isWritable: true },
+      { pubkey: CODE_VM_PROGRAM_ID, isSigner: false, isWritable: true },
+      { pubkey: CODE_VM_PROGRAM_ID, isSigner: false, isWritable: true },
+      { pubkey: CODE_VM_PROGRAM_ID, isSigner: false, isWritable: true },
+      { pubkey: new PublicKey(unlockPda), isSigner: false, isWritable: true },
+      { pubkey: new PublicKey(withdrawReceipt), isSigner: false, isWritable: true },
+      { pubkey: new PublicKey(externalAddress), isSigner: false, isWritable: true },
+      { pubkey: TOKEN_PROGRAM_ID, isSigner: false, isWritable: false },
+      { pubkey: SystemProgram.programId, isSigner: false, isWritable: false },
+      { pubkey: SYSVAR_RENT_PUBKEY, isSigner: false, isWritable: false },
+    ],
+    data,
   });
 }
 
@@ -414,6 +500,25 @@ async function waitForUnlockStateCreated({
     await new Promise((r) => setTimeout(r, intervalMs));
   }
   throw new Error("timed out waiting for unlock state to appear");
+}
+
+async function waitForWithdrawReceiptCreated({
+  rpcUrl, unlockPda, nonceB58, vmAddress, signature,
+  maxPolls = 60, intervalMs = 1000,
+}) {
+  for (let i = 0; i < maxPolls; i++) {
+    const receipt = await fetchWithdrawReceipt(rpcUrl, unlockPda, nonceB58, vmAddress);
+    if (receipt.exists) return receipt;
+
+    const resp = await rpcCall(rpcUrl, "getSignatureStatuses", [[signature]]);
+    const status = resp?.value?.[0];
+    if (status?.err) {
+      throw new Error(`transaction failed: ${JSON.stringify(status.err)}`);
+    }
+
+    await new Promise((r) => setTimeout(r, intervalMs));
+  }
+  throw new Error("timed out waiting for withdraw receipt");
 }
 
 async function refreshCardsForVm(vmB58) {
@@ -462,6 +567,7 @@ async function startUnlock(btn, vmAddress) {
   const ownerB58 = active.publicKey;
 
   showError(null);
+  clearSuccess();
 
   const originalHTML = btn.innerHTML;
   btn.disabled = true;
@@ -516,11 +622,122 @@ async function startUnlock(btn, vmAddress) {
     });
 
     await refreshCardsForVm(vmAddress);
+    showSuccess("Unlock started. Your funds are now unlocking.");
   } catch (err) {
     console.error("Unlock failed:", err);
     showError(`Unlock failed: ${err?.message ?? err}`);
     btn.innerHTML = originalHTML;
     btn.disabled = false;
+  }
+}
+
+async function startWithdraw(btn, input, vmAddress, item, vmInfo, unlockState) {
+  if (!active) return;
+
+  const destination = input.value.trim();
+  const ownerB58 = active.publicKey;
+  const rpcUrl = RPC_URL;
+
+  showError(null);
+  clearSuccess();
+
+  const originalBtnHTML = btn.innerHTML;
+  btn.disabled = true;
+  btn.innerHTML = `<svg class="spinner" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12a9 9 0 1 1-6.219-8.56"/></svg>`;
+  input.disabled = true;
+
+  try {
+    const nonceB58 = item?.account?.nonce
+      ? addressToBase58(item.account.nonce)
+      : "";
+    const memoryAccountB58 = item?.storage?.memory?.account
+      ? addressToBase58(item.storage.memory.account)
+      : null;
+    const accountIndex = Number(item?.storage?.memory?.index ?? 0);
+
+    if (!memoryAccountB58) throw new Error("Missing memory account in item data");
+    if (!nonceB58) throw new Error("Missing nonce in item data");
+
+    const timelockAddress = findVirtualTimelockAddress(
+      vmInfo.mint, vmInfo.authority, ownerB58, vmInfo.lockDuration,
+    );
+    const unlockPda = findUnlockAddress(ownerB58, timelockAddress, vmAddress);
+    const withdrawReceiptPda = findWithdrawReceiptAddress(unlockPda, nonceB58, vmAddress);
+    const vmOmnibus = findVmOmnibusAddress(vmAddress);
+    const destinationAta = findAssociatedTokenAddress(destination, vmInfo.mint);
+
+    const tx = new Transaction();
+
+    tx.add(buildCreateAtaIdempotentInstruction({
+      payer: ownerB58,
+      wallet: destination,
+      mint: vmInfo.mint,
+    }));
+
+    if (unlockState?.exists && unlockState.state === TIMELOCK_STATE.WAITING_FOR_TIMEOUT) {
+      tx.add(buildUnlockFinalizeInstruction({
+        accountOwner: ownerB58,
+        payer: ownerB58,
+        vm: vmAddress,
+        unlockPda,
+      }));
+    }
+
+    tx.add(buildWithdrawFromMemoryInstruction({
+      depositor: ownerB58,
+      payer: ownerB58,
+      vm: vmAddress,
+      vmOmnibus,
+      vmMemory: memoryAccountB58,
+      unlockPda,
+      withdrawReceipt: withdrawReceiptPda,
+      externalAddress: destinationAta,
+      accountIndex,
+    }));
+
+    const latest = await rpcCall(rpcUrl, "getLatestBlockhash", [
+      { commitment: "confirmed" },
+    ]);
+    const blockhash = latest?.value?.blockhash;
+    if (!blockhash) throw new Error("RPC did not return a blockhash");
+
+    tx.feePayer = new PublicKey(ownerB58);
+    tx.recentBlockhash = blockhash;
+
+    if (typeof active.provider.signTransaction !== "function") {
+      throw new Error("wallet does not support signTransaction");
+    }
+    const signed = await active.provider.signTransaction(tx);
+
+    const serialized = signed.serialize();
+    const b64 = bytesToBase64(new Uint8Array(serialized));
+    const signature = await rpcCall(rpcUrl, "sendTransaction", [
+      b64,
+      { encoding: "base64", preflightCommitment: "confirmed" },
+    ]);
+
+    await waitForWithdrawReceiptCreated({
+      rpcUrl,
+      unlockPda,
+      nonceB58,
+      vmAddress,
+      signature,
+    });
+
+    const ctx = lastVmContext?.get(vmAddress);
+    if (ctx) {
+      if (!ctx.withdrawReceipts) ctx.withdrawReceipts = new Map();
+      ctx.withdrawReceipts.set(nonceB58, { pda: withdrawReceiptPda, exists: true });
+    }
+    const card = btn.closest(".result-card");
+    if (card) card.remove();
+    showSuccess(`Withdrawal complete. Funds have been sent to ${destination.slice(0, 4)}...${destination.slice(-4)}.`);
+  } catch (err) {
+    console.error("Withdraw failed:", err);
+    showError(`Withdraw failed: ${err?.message ?? err}`);
+    btn.innerHTML = originalBtnHTML;
+    btn.disabled = false;
+    input.disabled = false;
   }
 }
 
@@ -630,6 +847,7 @@ async function searchTimelocks() {
   if (!active) return;
 
   showError(null);
+  clearSuccess();
   els.results.replaceChildren();
   els.results.hidden = false;
 
@@ -959,6 +1177,7 @@ function renderItem(item, vmB58, vmInfo, unlockState, withdrawReceipts) {
     withdrawRow.appendChild(sendBtn);
 
     input.addEventListener("input", () => {
+      if (sendBtn.querySelector(".spinner")) return;
       const val = input.value.trim();
       let valid = false;
       if (val) {
@@ -970,22 +1189,49 @@ function renderItem(item, vmB58, vmInfo, unlockState, withdrawReceipts) {
       sendBtn.disabled = !valid || !hasSufficientSol();
     });
 
+    sendBtn.addEventListener("click", () => {
+      startWithdraw(sendBtn, input, vmB58, item, vmInfo, unlockState);
+    });
+
     card.appendChild(withdrawRow);
   }
 
   return card;
 }
 
-const searchErrorText = document.getElementById("search-error-text");
-
 function showError(msg) {
-  if (!msg) {
-    els.searchError.hidden = true;
-    searchErrorText.textContent = "";
-    return;
+  document.querySelectorAll(".result-card--error").forEach((el) => el.remove());
+  if (!msg) return;
+
+  const banner = document.createElement("div");
+  banner.className = "result-card result-card--error";
+  banner.innerHTML = `<div class="result-card__info-row"><svg class="result-card__info-icon" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><line x1="15" y1="9" x2="9" y2="15"/><line x1="9" y1="9" x2="15" y2="15"/></svg><span></span></div>`;
+  banner.querySelector("span").textContent = msg;
+  const header = els.results.querySelector(".results__header");
+  if (header) {
+    header.before(banner);
+  } else {
+    els.connectBtn.before(banner);
   }
-  searchErrorText.textContent = msg;
-  els.searchError.hidden = false;
+}
+
+function clearSuccess() {
+  els.results.querySelectorAll(".result-card--success").forEach((el) => el.remove());
+}
+
+function showSuccess(msg) {
+  clearSuccess();
+  els.results.querySelectorAll(".result-card--success").forEach((el) => el.remove());
+  const banner = document.createElement("div");
+  banner.className = "result-card result-card--success";
+  banner.innerHTML = `<div class="result-card__info-row"><svg class="result-card__info-icon" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"/><polyline points="22 4 12 14.01 9 11.01"/></svg><span></span></div>`;
+  banner.querySelector("span").textContent = msg;
+  const header = els.results.querySelector(".results__header");
+  if (header) {
+    header.before(banner);
+  } else {
+    els.results.prepend(banner);
+  }
 }
 
 els.connectBtn.addEventListener("click", async () => {

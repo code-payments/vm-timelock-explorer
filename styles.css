@@ -148,22 +148,6 @@ main {
 
 
 
-.search-error {
-  display: flex;
-  align-items: center;
-  gap: 0.4rem;
-}
-
-.search-error__icon {
-  color: var(--danger);
-  flex-shrink: 0;
-}
-
-#search-error-text {
-  font-size: 1rem;
-  color: var(--danger);
-}
-
 .results {
   display: flex;
   flex-direction: column;
@@ -348,5 +332,23 @@ main {
 
 .result-card__info-icon {
   flex-shrink: 0;
+}
+
+.result-card--success {
+  border-color: rgba(61, 220, 151, 0.27);
+  background: rgba(61, 220, 151, 0.06);
+}
+
+.result-card--success .result-card__info-row {
+  color: var(--success);
+}
+
+.result-card--error {
+  border-color: rgba(255, 107, 107, 0.27);
+  background: rgba(255, 107, 107, 0.06);
+}
+
+.result-card--error .result-card__info-row {
+  color: var(--danger);
 }
 
