@@ -333,3 +333,20 @@ main {
   font-style: italic;
 }
 
+.result-card--info {
+  border-color: #ffd16644;
+  background: rgba(255, 209, 102, 0.06);
+}
+
+.result-card__info-row {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  font-size: 0.85rem;
+  color: #ffd166;
+}
+
+.result-card__info-icon {
+  flex-shrink: 0;
+}
+

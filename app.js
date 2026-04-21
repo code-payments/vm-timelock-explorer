@@ -24,11 +24,13 @@ const els = {
   publicKey: document.getElementById("public-key"),
   solBalance: document.getElementById("sol-balance"),
   results: document.getElementById("results"),
+  lowBalanceWarning: document.getElementById("low-balance-warning"),
   disconnectBtn: document.getElementById("disconnect-btn"),
 };
 
 let active = null; // { provider, publicKey }
 let solBalanceTimer = null;
+let currentLamports = null;
 
 async function connectPhantom() {
   const provider = getPhantomProvider();
@@ -69,13 +71,32 @@ function showConnectedView() {
   startSolBalancePolling();
 }
 
+const LOW_BALANCE_LAMPORTS = 5_000_000; // 0.005 SOL
+
+function hasSufficientSol() {
+  return typeof currentLamports === "number" && currentLamports >= LOW_BALANCE_LAMPORTS;
+}
+
+function updateSolGatedButtons() {
+  document.querySelectorAll("[data-sol-gate=unlock]").forEach((btn) => {
+    if (btn.querySelector(".spinner")) return;
+    btn.disabled = !hasSufficientSol();
+  });
+  document.querySelectorAll(".result-card__dest-input").forEach((input) => {
+    input.dispatchEvent(new Event("input"));
+  });
+}
+
 function fetchSolBalance() {
   if (!active) return;
   rpcCall(RPC_URL, "getBalance", [active.publicKey])
     .then((result) => {
       const lamports = result?.value ?? result;
       if (typeof lamports === "number") {
+        currentLamports = lamports;
         els.solBalance.textContent = `${(lamports / 1e9).toFixed(4)} SOL`;
+        els.lowBalanceWarning.hidden = lamports >= LOW_BALANCE_LAMPORTS;
+        updateSolGatedButtons();
       }
     })
     .catch(() => {});
@@ -96,6 +117,8 @@ function stopSolBalancePolling() {
 
 function showConnectView() {
   stopSolBalancePolling();
+  currentLamports = null;
+  els.lowBalanceWarning.hidden = true;
   els.connectedView.hidden = true;
   els.connectBtn.hidden = false;
   els.connectBtn.disabled = false;
@@ -863,6 +886,8 @@ function renderItem(item, vmB58, vmInfo, unlockState, withdrawReceipts) {
   if (unlockState && !unlockState.exists && vmB58) {
     const unlockBtn = document.createElement("button");
     unlockBtn.className = "btn btn--primary btn--icon";
+    unlockBtn.dataset.solGate = "unlock";
+    unlockBtn.disabled = !hasSufficientSol();
     unlockBtn.innerHTML = `<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="11" width="18" height="11" rx="2" ry="2"/><path d="M7 11V7a5 5 0 0 1 9.9-1"/></svg>`;
     unlockBtn.title = "Start Unlock";
     unlockBtn.addEventListener("click", () => startUnlock(unlockBtn, vmB58));
@@ -899,7 +924,7 @@ function renderItem(item, vmB58, vmInfo, unlockState, withdrawReceipts) {
           valid = bytes.length === 32;
         } catch {}
       }
-      sendBtn.disabled = !valid;
+      sendBtn.disabled = !valid || !hasSufficientSol();
     });
 
     card.appendChild(withdrawRow);
