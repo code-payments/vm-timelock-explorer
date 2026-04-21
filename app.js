@@ -414,7 +414,7 @@ async function startUnlock(btn, vmAddress) {
   const originalDetail = detail?.textContent;
 
   try {
-    if (detail) detail.textContent = "Preparing…";
+    if (detail) detail.textContent = "Preparing to unlock account…";
     const vmInfo = await fetchVmInfo(rpcUrl, vmAddress);
     const timelockAddress = findVirtualTimelockAddress(
       vmInfo.mint,
@@ -442,7 +442,7 @@ async function startUnlock(btn, vmAddress) {
     tx.feePayer = new PublicKey(ownerB58);
     tx.recentBlockhash = blockhash;
 
-    if (detail) detail.textContent = "Awaiting wallet…";
+    if (detail) detail.textContent = "Waiting for user to confirm on Phantom...";
     if (typeof active.provider.signTransaction !== "function") {
       throw new Error("wallet does not support signTransaction");
     }
@@ -456,7 +456,7 @@ async function startUnlock(btn, vmAddress) {
       { encoding: "base64", preflightCommitment: "confirmed" },
     ]);
 
-    if (detail) detail.textContent = "Waiting for unlock…";
+    if (detail) detail.textContent = "Waiting for transaction to finalize…";
     await waitForUnlockStateCreated({
       rpcUrl,
       ownerB58,
