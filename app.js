@@ -416,6 +416,40 @@ async function waitForUnlockStateCreated({
   throw new Error("timed out waiting for unlock state to appear");
 }
 
+async function refreshCardsForVm(vmB58) {
+  if (!lastSearchBody || !lastVmContext || !active) return;
+
+  const ctx = lastVmContext.get(vmB58);
+  if (!ctx?.vmInfo) return;
+
+  const timelockAddress = findVirtualTimelockAddress(
+    ctx.vmInfo.mint,
+    ctx.vmInfo.authority,
+    active.publicKey,
+    ctx.vmInfo.lockDuration,
+  );
+  const newUnlock = await fetchUnlockState(
+    RPC_URL,
+    active.publicKey,
+    timelockAddress,
+    vmB58,
+  );
+  newUnlock.timelockAddress = timelockAddress;
+  ctx.unlockState = newUnlock;
+
+  const oldCards = els.results.querySelectorAll(`.result-card[data-vm="${vmB58}"]`);
+  for (const oldCard of oldCards) {
+    const nonce = oldCard.dataset.nonce;
+    const item = (lastSearchBody.items ?? []).find((it) => {
+      const n = it?.account?.nonce ? addressToBase58(it.account.nonce) : "";
+      return n === nonce;
+    });
+    if (!item) continue;
+    const newCard = renderItem(item, vmB58, ctx.vmInfo, ctx.unlockState, ctx.withdrawReceipts);
+    oldCard.replaceWith(newCard);
+  }
+}
+
 async function startUnlock(btn, vmAddress) {
   if (!active) return;
 
@@ -481,7 +515,7 @@ async function startUnlock(btn, vmAddress) {
       signature,
     });
 
-    await searchTimelocks();
+    await refreshCardsForVm(vmAddress);
   } catch (err) {
     console.error("Unlock failed:", err);
     showError(`Unlock failed: ${err?.message ?? err}`);
@@ -489,6 +523,11 @@ async function startUnlock(btn, vmAddress) {
     btn.disabled = false;
   }
 }
+
+// Retained after each search so individual cards can be re-rendered without a
+// full refresh (e.g. after an unlock completes).
+let lastSearchBody = null;
+let lastVmContext = null; // Map<vmB58, { vmInfo, unlockState, withdrawReceipts }>
 
 // Cache VM-account-derived info within a session so repeated searches on the
 // same VM don't re-query the RPC.
@@ -704,7 +743,9 @@ async function searchTimelocks() {
     }
 
     await minWait;
-    renderResults(body ?? {}, vmContext);
+    lastSearchBody = body ?? {};
+    lastVmContext = vmContext;
+    renderResults(lastSearchBody, lastVmContext);
   } catch (err) {
     await minWait;
     console.error("Indexer request failed:", err);
@@ -830,8 +871,10 @@ function describeUnlockState(unlockState, vmInfo, withdrawReceipt) {
 function renderItem(item, vmB58, vmInfo, unlockState, withdrawReceipts) {
   const card = document.createElement("div");
   card.className = "result-card";
+  if (vmB58) card.dataset.vm = vmB58;
 
   const nonceB58 = item?.account?.nonce ? addressToBase58(item.account.nonce) : "";
+  if (nonceB58) card.dataset.nonce = nonceB58;
   const withdrawReceipt = nonceB58 ? withdrawReceipts?.get(nonceB58) : null;
   const unlockInfo = describeUnlockState(unlockState, vmInfo, withdrawReceipt);
 
