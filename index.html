@@ -8,78 +8,26 @@
   </head>
   <body>
     <main>
-      <header>
-        <h1>VM Timelock Explorer</h1>
-      </header>
-
-      <section id="wallet-section">
-        <div id="status" class="status status--disconnected">Not connected</div>
-
-        <div id="wallet-list" class="wallet-list" hidden>
-          <p class="wallet-list__label">Choose a wallet:</p>
-          <div id="wallet-buttons" class="wallet-buttons"></div>
+      <section id="wallet-section" class="search-view">
+        <div id="search-error" class="search-error" hidden>
+          <svg class="search-error__icon" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><line x1="15" y1="9" x2="9" y2="15"/><line x1="9" y1="9" x2="15" y2="15"/></svg>
+          <span id="search-error-text"></span>
         </div>
+        <div class="wallet-info">
+          <div class="wallet-info__col">
+            <span class="wallet-info__label">Wallet</span>
+            <code id="public-key" class="wallet-info__value">-</code>
+          </div>
+          <div class="wallet-info__col wallet-info__col--end">
+            <span class="wallet-info__label">SOL Balance</span>
+            <span id="sol-balance" class="wallet-info__value">-</span>
+          </div>
+        </div>
+        <button id="connect-btn" class="btn btn--primary">Connect Phantom Wallet</button>
 
-        <div id="connected-view" class="connected-view" hidden>
-          <div class="field">
-            <span class="field__label">Wallet</span>
-            <span id="connected-wallet" class="field__value"></span>
-          </div>
-          <div class="field">
-            <span class="field__label">Public key</span>
-            <code id="public-key" class="field__value field__value--mono"></code>
-          </div>
-          <div class="field">
-            <label for="vm-address" class="field__label">VM address</label>
-            <input
-              id="vm-address"
-              class="input input--mono"
-              type="text"
-              autocomplete="off"
-              spellcheck="false"
-              placeholder="Enter VM public key"
-            />
-          </div>
-          <div class="field">
-            <label for="indexer-url" class="field__label">Indexer URL</label>
-            <input
-              id="indexer-url"
-              class="input"
-              type="url"
-              autocomplete="off"
-              spellcheck="false"
-              value="http://localhost:8086"
-            />
-          </div>
-          <div class="field">
-            <label for="rpc-url" class="field__label">Solana RPC URL</label>
-            <input
-              id="rpc-url"
-              class="input"
-              type="url"
-              autocomplete="off"
-              spellcheck="false"
-              value="https://solana-rpc.flipcash.com"
-            />
-          </div>
-          <button id="search-btn" class="btn btn--primary" disabled>Search Timelocks</button>
-
-          <div id="search-error" class="search-error" hidden></div>
+        <div id="connected-view" hidden>
           <div id="results" class="results" hidden></div>
-
-          <button id="disconnect-btn" class="btn btn--secondary">Disconnect</button>
-        </div>
-
-        <div id="no-wallets" class="empty" hidden>
-          <p>No supported wallet detected.</p>
-          <p>
-            Install
-            <a href="https://phantom.app/" target="_blank" rel="noopener noreferrer">Phantom</a>,
-            <a href="https://solflare.com/" target="_blank" rel="noopener noreferrer">Solflare</a>,
-            or
-            <a href="https://backpack.app/" target="_blank" rel="noopener noreferrer">Backpack</a>
-            to continue.
-          </p>
+          <button id="disconnect-btn" class="btn btn--disconnect">Disconnect Wallet</button>
         </div>
       </section>
     </main>

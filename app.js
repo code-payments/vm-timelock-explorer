@@ -7,124 +7,104 @@ import {
 } from "@solana/web3.js";
 import bs58 from "bs58";
 
-// Supported Solana wallets. Each entry describes how to locate the
-// injected provider on `window` when the wallet's browser extension is
-// installed. Providers share a minimal contract: `connect()` returns
-// `{ publicKey }`, `disconnect()` tears down the session, and
-// `publicKey.toString()` yields a base58 address.
-const WALLETS = [
-  {
-    id: "phantom",
-    name: "Phantom",
-    getProvider: () => {
-      const p = window.phantom?.solana;
-      if (p?.isPhantom) return p;
-      if (window.solana?.isPhantom) return window.solana;
-      return null;
-    },
-  },
-  {
-    id: "solflare",
-    name: "Solflare",
-    getProvider: () => (window.solflare?.isSolflare ? window.solflare : null),
-  },
-  {
-    id: "backpack",
-    name: "Backpack",
-    getProvider: () => window.backpack?.isBackpack ? window.backpack : null,
-  },
-];
+function getPhantomProvider() {
+  const p = window.phantom?.solana;
+  if (p?.isPhantom) return p;
+  if (window.solana?.isPhantom) return window.solana;
+  return null;
+}
+
+const INDEXER_URL = "http://localhost:8086";
+const RPC_URL = "https://solana-rpc.flipcash.com";
 
 const els = {
-  status: document.getElementById("status"),
-  walletList: document.getElementById("wallet-list"),
-  walletButtons: document.getElementById("wallet-buttons"),
+  connectBtn: document.getElementById("connect-btn"),
   connectedView: document.getElementById("connected-view"),
-  connectedWallet: document.getElementById("connected-wallet"),
-  publicKey: document.getElementById("public-key"),
-  disconnectBtn: document.getElementById("disconnect-btn"),
-  noWallets: document.getElementById("no-wallets"),
-  vmAddress: document.getElementById("vm-address"),
-  indexerUrl: document.getElementById("indexer-url"),
-  rpcUrl: document.getElementById("rpc-url"),
-  searchBtn: document.getElementById("search-btn"),
   searchError: document.getElementById("search-error"),
+  publicKey: document.getElementById("public-key"),
+  solBalance: document.getElementById("sol-balance"),
   results: document.getElementById("results"),
+  disconnectBtn: document.getElementById("disconnect-btn"),
 };
 
-let active = null; // { wallet, provider }
+let active = null; // { provider, publicKey }
+let solBalanceTimer = null;
 
-function setStatus(state, text) {
-  els.status.className = `status status--${state}`;
-  els.status.textContent = text;
-}
-
-function show(el, visible) {
-  el.hidden = !visible;
-}
-
-function renderDisconnected(available) {
-  active = null;
-  setStatus("disconnected", "Not connected");
-  show(els.connectedView, false);
-  if (els.results) {
-    els.results.hidden = true;
-    els.results.replaceChildren();
-  }
-  if (els.searchError) {
-    els.searchError.hidden = true;
-    els.searchError.textContent = "";
-  }
-  if (els.searchBtn) els.searchBtn.disabled = true;
-
-  if (available.length === 0) {
-    show(els.walletList, false);
-    show(els.noWallets, true);
-    return;
-  }
-
-  show(els.noWallets, false);
-  show(els.walletList, true);
-  els.walletButtons.replaceChildren();
-  for (const wallet of available) {
-    const btn = document.createElement("button");
-    btn.className = "btn btn--primary";
-    btn.textContent = `Connect ${wallet.name}`;
-    btn.addEventListener("click", () => connect(wallet));
-    els.walletButtons.appendChild(btn);
-  }
-}
-
-function renderConnected(wallet, publicKey) {
-  active = { wallet, provider: wallet.getProvider() };
-  setStatus("connected", "Connected");
-  show(els.walletList, false);
-  show(els.noWallets, false);
-  show(els.connectedView, true);
-  els.connectedWallet.textContent = wallet.name;
-  els.publicKey.textContent = publicKey.toString();
-  updateSearchEnabled();
-}
-
-async function connect(wallet) {
-  const provider = wallet.getProvider();
+async function connectPhantom() {
+  const provider = getPhantomProvider();
   if (!provider) {
-    renderDisconnected(detectAvailable());
-    return;
+    throw new Error(
+      "Phantom wallet not detected. Install it from phantom.app to continue.",
+    );
   }
 
-  setStatus("connecting", `Connecting to ${wallet.name}…`);
-  try {
-    const resp = await provider.connect();
-    const publicKey = resp?.publicKey ?? provider.publicKey;
-    if (!publicKey) throw new Error("No public key returned by wallet");
+  const resp = await provider.connect();
+  const publicKey = resp?.publicKey ?? provider.publicKey;
+  if (!publicKey) throw new Error("No public key returned by wallet");
 
-    bindProviderEvents(provider);
-    renderConnected(wallet, publicKey);
-  } catch (err) {
-    console.error("Wallet connection failed:", err);
-    setStatus("disconnected", `Connection failed: ${err?.message ?? "unknown error"}`);
+  active = { provider, publicKey: publicKey.toString() };
+  showConnectedView();
+
+  if (typeof provider.on === "function") {
+    provider.on("disconnect", () => {
+      active = null;
+      showConnectView();
+    });
+    provider.on("accountChanged", (pk) => {
+      if (pk) {
+        active = { provider, publicKey: pk.toString() };
+      } else {
+        active = null;
+        showConnectView();
+      }
+    });
   }
+}
+
+function showConnectedView() {
+  els.connectBtn.hidden = true;
+  els.connectedView.hidden = false;
+  els.publicKey.textContent = active.publicKey;
+  els.solBalance.textContent = "-";
+  startSolBalancePolling();
+}
+
+function fetchSolBalance() {
+  if (!active) return;
+  rpcCall(RPC_URL, "getBalance", [active.publicKey])
+    .then((result) => {
+      const lamports = result?.value ?? result;
+      if (typeof lamports === "number") {
+        els.solBalance.textContent = `${(lamports / 1e9).toFixed(4)} SOL`;
+      }
+    })
+    .catch(() => {});
+}
+
+function startSolBalancePolling() {
+  stopSolBalancePolling();
+  fetchSolBalance();
+  solBalanceTimer = setInterval(fetchSolBalance, 5000);
+}
+
+function stopSolBalancePolling() {
+  if (solBalanceTimer) {
+    clearInterval(solBalanceTimer);
+    solBalanceTimer = null;
+  }
+}
+
+function showConnectView() {
+  stopSolBalancePolling();
+  els.connectedView.hidden = true;
+  els.connectBtn.hidden = false;
+  els.connectBtn.disabled = false;
+  els.connectBtn.textContent = "Connect Phantom Wallet";
+  els.publicKey.textContent = "-";
+  els.solBalance.textContent = "-";
+  els.results.hidden = true;
+  els.results.replaceChildren();
+  showError(null);
 }
 
 async function disconnect() {
@@ -134,23 +114,8 @@ async function disconnect() {
   } catch (err) {
     console.warn("Disconnect error:", err);
   }
-  renderDisconnected(detectAvailable());
-}
-
-function bindProviderEvents(provider) {
-  if (typeof provider.on !== "function") return;
-  provider.on("disconnect", () => renderDisconnected(detectAvailable()));
-  provider.on("accountChanged", (publicKey) => {
-    if (publicKey && active) {
-      renderConnected(active.wallet, publicKey);
-    } else {
-      renderDisconnected(detectAvailable());
-    }
-  });
-}
-
-function detectAvailable() {
-  return WALLETS.filter((w) => w.getProvider() !== null);
+  active = null;
+  showConnectView();
 }
 
 // --- Wire format helpers --------------------------------------------------
@@ -229,7 +194,8 @@ function parseMetadataAccount(dataBytes) {
   };
   const name = readString().trim();
   const symbol = readString().trim();
-  return { name, symbol };
+  const uri = readString().trim();
+  return { name, symbol, uri };
 }
 
 async function fetchTokenMetadata(rpcUrl, mintBase58) {
@@ -427,36 +393,28 @@ async function waitForUnlockStateCreated({
   throw new Error("timed out waiting for unlock state to appear");
 }
 
-async function startUnlock(button) {
+async function startUnlock(btn, vmAddress) {
   if (!active) return;
 
-  const rpcUrl = els.rpcUrl.value.trim().replace(/\/+$/, "");
+  const rpcUrl = RPC_URL;
   if (!rpcUrl) {
-    showError("A Solana RPC URL is required to start unlock.");
+    showError("A Solana RPC URL is required to unlock.");
     return;
   }
 
-  const vmAddress = els.vmAddress.value.trim();
-  if (!vmAddress) {
-    showError("VM address is required.");
-    return;
-  }
-
-  const ownerB58 = els.publicKey.textContent;
+  const ownerB58 = active.publicKey;
 
   showError(null);
 
-  // Disable every "Start Unlock" button on the page — the unlock PDA is
-  // shared across every item in the current search, so one click covers
-  // all cards.
-  const actionButtons = Array.from(
-    document.querySelectorAll(".result-card__action"),
-  );
-  for (const b of actionButtons) b.disabled = true;
-  const originalLabel = button.textContent;
+  const originalHTML = btn.innerHTML;
+  btn.disabled = true;
+
+  const card = btn.closest(".result-card");
+  const detail = card?.querySelector(".result-card__unlock-detail");
+  const originalDetail = detail?.textContent;
 
   try {
-    button.textContent = "Preparing…";
+    if (detail) detail.textContent = "Preparing…";
     const vmInfo = await fetchVmInfo(rpcUrl, vmAddress);
     const timelockAddress = findVirtualTimelockAddress(
       vmInfo.mint,
@@ -484,13 +442,13 @@ async function startUnlock(button) {
     tx.feePayer = new PublicKey(ownerB58);
     tx.recentBlockhash = blockhash;
 
-    button.textContent = "Awaiting wallet…";
+    if (detail) detail.textContent = "Awaiting wallet…";
     if (typeof active.provider.signTransaction !== "function") {
       throw new Error("wallet does not support signTransaction");
     }
     const signed = await active.provider.signTransaction(tx);
 
-    button.textContent = "Sending…";
+    if (detail) detail.textContent = "Sending…";
     const serialized = signed.serialize();
     const b64 = bytesToBase64(new Uint8Array(serialized));
     const signature = await rpcCall(rpcUrl, "sendTransaction", [
@@ -498,7 +456,7 @@ async function startUnlock(button) {
       { encoding: "base64", preflightCommitment: "confirmed" },
     ]);
 
-    button.textContent = "Waiting for unlock…";
+    if (detail) detail.textContent = "Waiting for unlock…";
     await waitForUnlockStateCreated({
       rpcUrl,
       ownerB58,
@@ -509,10 +467,11 @@ async function startUnlock(button) {
 
     await searchTimelocks();
   } catch (err) {
-    console.error("Start unlock failed:", err);
-    showError(`Start unlock failed: ${err?.message ?? err}`);
-    button.textContent = originalLabel;
-    for (const b of actionButtons) b.disabled = false;
+    console.error("Unlock failed:", err);
+    showError(`Unlock failed: ${err?.message ?? err}`);
+    btn.innerHTML = originalHTML;
+    btn.disabled = false;
+    if (detail) detail.textContent = originalDetail;
   }
 }
 
@@ -570,19 +529,26 @@ async function fetchVmInfo(rpcUrl, vmAddressBase58) {
 
   let name = null;
   let symbol = null;
+  let image = null;
   try {
     const meta = await fetchTokenMetadata(rpcUrl, mint);
     if (meta) {
       name = meta.name || null;
       symbol = meta.symbol || null;
+      if (meta.uri) {
+        try {
+          const offchain = await fetch(meta.uri).then((r) => r.json());
+          image = offchain?.image || null;
+        } catch (err) {
+          console.warn("Off-chain metadata fetch failed:", err);
+        }
+      }
     }
   } catch (err) {
-    // Metadata is optional — many tokens have none, and older RPCs may
-    // reject the PDA lookup. Surface in console but don't fail the search.
     console.warn("Token metadata lookup failed:", err);
   }
 
-  const info = { mint, decimals, name, symbol, authority, lockDuration };
+  const info = { mint, decimals, name, symbol, image, authority, lockDuration };
   vmInfoCache.set(vmAddressBase58, info);
   return info;
 }
@@ -594,63 +560,47 @@ function formatTokenAmount(balanceStr, decimals) {
   if (!/^\d+$/.test(s)) return s;
   if (decimals === 0) return s;
   const trimmed = s.replace(/^0+/, "") || "0";
+  let intPart, fracPart;
   if (trimmed.length <= decimals) {
-    const frac = trimmed.padStart(decimals, "0").replace(/0+$/, "");
-    return frac ? `0.${frac}` : "0";
+    intPart = "0";
+    fracPart = trimmed.padStart(decimals, "0");
+  } else {
+    intPart = trimmed.slice(0, trimmed.length - decimals);
+    fracPart = trimmed.slice(trimmed.length - decimals);
   }
-  const intPart = trimmed.slice(0, trimmed.length - decimals);
-  const fracPart = trimmed.slice(trimmed.length - decimals).replace(/0+$/, "");
-  return fracPart ? `${intPart}.${fracPart}` : intPart;
+  const rounded = fracPart.slice(0, 2).padEnd(2, "0");
+  return rounded === "00" ? intPart : `${intPart}.${rounded}`;
 }
 
 async function searchTimelocks() {
   if (!active) return;
 
-  const vmInput = els.vmAddress.value.trim();
-  const baseUrl = els.indexerUrl.value.trim().replace(/\/+$/, "");
-  const rpcUrl = els.rpcUrl.value.trim().replace(/\/+$/, "");
-
   showError(null);
-  els.results.hidden = true;
   els.results.replaceChildren();
+  els.results.hidden = false;
 
-  if (!vmInput) {
-    showError("Enter a VM address first.");
-    return;
-  }
-  if (!baseUrl) {
-    showError("Enter an indexer URL.");
-    return;
-  }
+  const loadingHeader = document.createElement("div");
+  loadingHeader.className = "results__header";
+  loadingHeader.innerHTML = '<div class="results__label">Tokens</div><span class="btn btn--refresh btn--refresh--spinning"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/></svg></span>';
+  els.results.appendChild(loadingHeader);
 
-  let vmAccount;
-  try {
-    vmAccount = addressFromBase58(vmInput);
-  } catch (err) {
-    showError(`Invalid VM address: ${err.message}`);
-    return;
-  }
+  const minWait = new Promise((r) => setTimeout(r, 2000));
 
-  const ownerBase58 = active && els.publicKey.textContent;
   let owner;
   try {
-    owner = addressFromBase58(ownerBase58);
+    owner = addressFromBase58(active.publicKey);
   } catch (err) {
     showError(`Invalid wallet public key: ${err.message}`);
     return;
   }
 
-  els.searchBtn.disabled = true;
-  const originalLabel = els.searchBtn.textContent;
-  els.searchBtn.textContent = "Searching…";
-
   try {
     const resp = await fetch(
-      `${baseUrl}/code.vm.v1.Indexer/GetVirtualTimelockAccounts`,
+      `${INDEXER_URL}/code.vm.v1.Indexer/SearchVirtualTimelockAccounts`,
       {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ vmAccount, owner }),
+        body: JSON.stringify({ owner }),
       },
     );
 
@@ -669,93 +619,138 @@ async function searchTimelocks() {
       throw new Error(msg);
     }
 
-    let vmInfo = null;
-    let unlockState = null;
-    let withdrawReceipts = null;
-    if (rpcUrl && body?.items?.length) {
-      try {
-        vmInfo = await fetchVmInfo(rpcUrl, vmInput);
-      } catch (err) {
-        console.warn("VM info lookup failed, falling back to base units:", err);
-      }
-
-      // The virtual timelock address is a PDA of (mint, authority, owner,
-      // lock_duration), so every item returned by the indexer for a single
-      // (VM, owner) query shares the same unlock state account. One lookup
-      // per search suffices.
-      if (vmInfo) {
-        try {
-          const timelockAddress = findVirtualTimelockAddress(
-            vmInfo.mint,
-            vmInfo.authority,
-            ownerBase58,
-            vmInfo.lockDuration,
-          );
-          unlockState = await fetchUnlockState(
-            rpcUrl,
-            ownerBase58,
-            timelockAddress,
-            vmInput,
-          );
-          unlockState.timelockAddress = timelockAddress;
-        } catch (err) {
-          console.warn("Unlock state lookup failed:", err);
-        }
-      }
-
-      // Once an account is fully unlocked, funds may already have been
-      // withdrawn. Each record (one per nonce) gets its own withdraw
-      // receipt, so a separate lookup is needed per item.
-      if (unlockState?.exists && unlockState.state === TIMELOCK_STATE.UNLOCKED) {
-        withdrawReceipts = new Map();
-        await Promise.all(
-          body.items.map(async (item) => {
-            const nonceB58 = item?.account?.nonce
-              ? addressToBase58(item.account.nonce)
-              : null;
-            if (!nonceB58) return;
-            try {
-              const receipt = await fetchWithdrawReceipt(
-                rpcUrl,
-                unlockState.pda,
-                nonceB58,
-                vmInput,
-              );
-              withdrawReceipts.set(nonceB58, receipt);
-            } catch (err) {
-              console.warn("Withdraw receipt lookup failed:", err);
-            }
-          }),
-        );
-      }
+    // Group items by VM address so we can batch RPC lookups per VM.
+    const items = body?.items ?? [];
+    const vmGroups = new Map();
+    for (const item of items) {
+      const vmB58 = item?.vmAccount ? addressToBase58(item.vmAccount) : null;
+      if (!vmB58) continue;
+      if (!vmGroups.has(vmB58)) vmGroups.set(vmB58, []);
+      vmGroups.get(vmB58).push(item);
     }
 
-    renderResults(body ?? {}, vmInfo, unlockState, withdrawReceipts);
+    // For each unique VM, fetch on-chain info + unlock state in parallel.
+    const vmContext = new Map(); // vmB58 -> { vmInfo, unlockState, withdrawReceipts }
+    if (RPC_URL && vmGroups.size > 0) {
+      await Promise.all(
+        Array.from(vmGroups.entries()).map(async ([vmB58, vmItems]) => {
+          const ctx = { vmInfo: null, unlockState: null, withdrawReceipts: null };
+          vmContext.set(vmB58, ctx);
+
+          try {
+            ctx.vmInfo = await fetchVmInfo(RPC_URL, vmB58);
+          } catch (err) {
+            console.warn(`VM info lookup failed for ${vmB58}:`, err);
+            return;
+          }
+
+          try {
+            const timelockAddress = findVirtualTimelockAddress(
+              ctx.vmInfo.mint,
+              ctx.vmInfo.authority,
+              active.publicKey,
+              ctx.vmInfo.lockDuration,
+            );
+            ctx.unlockState = await fetchUnlockState(
+              RPC_URL,
+              active.publicKey,
+              timelockAddress,
+              vmB58,
+            );
+            ctx.unlockState.timelockAddress = timelockAddress;
+          } catch (err) {
+            console.warn(`Unlock state lookup failed for ${vmB58}:`, err);
+          }
+
+          if (ctx.unlockState?.exists && ctx.unlockState.state === TIMELOCK_STATE.UNLOCKED) {
+            ctx.withdrawReceipts = new Map();
+            await Promise.all(
+              vmItems.map(async (item) => {
+                const nonceB58 = item?.account?.nonce
+                  ? addressToBase58(item.account.nonce)
+                  : null;
+                if (!nonceB58) return;
+                try {
+                  const receipt = await fetchWithdrawReceipt(
+                    RPC_URL,
+                    ctx.unlockState.pda,
+                    nonceB58,
+                    vmB58,
+                  );
+                  ctx.withdrawReceipts.set(nonceB58, receipt);
+                } catch (err) {
+                  console.warn("Withdraw receipt lookup failed:", err);
+                }
+              }),
+            );
+          }
+        }),
+      );
+    }
+
+    await minWait;
+    renderResults(body ?? {}, vmContext);
   } catch (err) {
+    await minWait;
     console.error("Indexer request failed:", err);
     showError(`Search failed: ${err.message}`);
-  } finally {
-    els.searchBtn.disabled = false;
-    els.searchBtn.textContent = originalLabel;
-    updateSearchEnabled();
   }
 }
 
-function renderResults(body, vmInfo, unlockState, withdrawReceipts) {
+function renderTokensHeader(container) {
+  const header = document.createElement("div");
+  header.className = "results__header";
+
+  const label = document.createElement("div");
+  label.className = "results__label";
+  label.textContent = "Tokens";
+  header.appendChild(label);
+
+  const refreshBtn = document.createElement("button");
+  refreshBtn.className = "btn btn--refresh";
+  refreshBtn.title = "Refresh";
+  refreshBtn.innerHTML = '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/></svg>';
+  refreshBtn.addEventListener("click", searchTimelocks);
+  header.appendChild(refreshBtn);
+
+  container.appendChild(header);
+}
+
+function renderResults(body, vmContext) {
   const container = els.results;
   container.replaceChildren();
   container.hidden = false;
 
-  if (body.result === "NOT_FOUND" || !body.items || body.items.length === 0) {
+  const hasResults = body.result !== "NOT_FOUND" && body.items?.length > 0;
+
+  if (!hasResults) {
     const empty = document.createElement("p");
     empty.className = "results__empty";
-    empty.textContent = "No timelock accounts found for this owner on this VM.";
+    empty.textContent = "No Timelock accounts found for this wallet.";
     container.appendChild(empty);
     return;
   }
 
-  for (const item of body.items) {
-    container.appendChild(renderItem(item, vmInfo, unlockState, withdrawReceipts));
+  renderTokensHeader(container);
+
+  const sorted = [...body.items].sort((a, b) => {
+    const vmA = a?.vmAccount ? addressToBase58(a.vmAccount) : null;
+    const vmB = b?.vmAccount ? addressToBase58(b.vmAccount) : null;
+    const nameA = (vmA && vmContext.get(vmA)?.vmInfo?.name) || "";
+    const nameB = (vmB && vmContext.get(vmB)?.vmInfo?.name) || "";
+    return nameA.localeCompare(nameB);
+  });
+
+  for (const item of sorted) {
+    const bal = item?.account?.balance ?? "0";
+    if (bal === "0" || bal === 0) continue;
+    const vmB58 = item?.vmAccount ? addressToBase58(item.vmAccount) : null;
+    const ctx = vmB58 ? vmContext.get(vmB58) : null;
+    const nonceB58 = item?.account?.nonce ? addressToBase58(item.account.nonce) : "";
+    if (nonceB58 && ctx?.withdrawReceipts?.get(nonceB58)?.exists) continue;
+    container.appendChild(
+      renderItem(item, vmB58, ctx?.vmInfo, ctx?.unlockState, ctx?.withdrawReceipts),
+    );
   }
 }
 
@@ -777,7 +772,12 @@ function describeUnlockState(unlockState, vmInfo, withdrawReceipt) {
 
   const unlockAtMs = unlockState.unlockAt * 1000;
   const unlockDate = new Date(unlockAtMs);
-  const iso = Number.isFinite(unlockAtMs) ? unlockDate.toISOString() : "—";
+  const localDate = Number.isFinite(unlockAtMs)
+    ? unlockDate.toLocaleDateString("en-US", { month: "long", day: "numeric", year: "numeric" })
+    : "—";
+  const localTime = Number.isFinite(unlockAtMs)
+    ? unlockDate.toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit" }).toLowerCase()
+    : "—";
   const now = Date.now();
 
   if (unlockState.state === TIMELOCK_STATE.UNLOCKED) {
@@ -789,7 +789,7 @@ function describeUnlockState(unlockState, vmInfo, withdrawReceipt) {
     }
     return {
       status: "Unlocked",
-      detail: `Account is unlocked. Funds can now be withdrawn`,
+      detail: `Funds are unlocked and can now be withdrawn`,
     };
   }
 
@@ -797,148 +797,147 @@ function describeUnlockState(unlockState, vmInfo, withdrawReceipt) {
     if (unlockAtMs > now) {
       return {
         status: "Unlocking",
-        detail: `Account can be unlocked at ${iso}.`,
+        detail: `Funds are unlocking and can be withdrawn on ${localDate} at ${localTime}`,
       };
     }
     return {
-      status: "Ready to complete unlock",
-      detail: `Unlock waiting period has passed`,
+      status: "Unlocked",
+      detail: `Funds are unlocked and can now be withdrawn`,
     };
   }
 
   return {
     status: `State ${unlockState.state}`,
-    detail: `Unlock-at: ${iso}.`,
+    detail: `Unlock-at: ${localDate} at ${localTime}`,
   };
 }
 
-function renderItem(item, vmInfo, unlockState, withdrawReceipts) {
+function renderItem(item, vmB58, vmInfo, unlockState, withdrawReceipts) {
   const card = document.createElement("div");
   card.className = "result-card";
 
   const nonceB58 = item?.account?.nonce ? addressToBase58(item.account.nonce) : "";
   const withdrawReceipt = nonceB58 ? withdrawReceipts?.get(nonceB58) : null;
+  const unlockInfo = describeUnlockState(unlockState, vmInfo, withdrawReceipt);
+
+  const header = document.createElement("div");
+  header.className = "result-card__header";
+
+  const nameGroup = document.createElement("div");
+  nameGroup.className = "result-card__name-group";
+
+  const nameRow = document.createElement("div");
+  nameRow.className = "result-card__name-row";
+
+  if (vmInfo?.image) {
+    const img = document.createElement("img");
+    img.className = "result-card__token-img";
+    img.src = vmInfo.image;
+    img.alt = vmInfo.name || vmInfo.symbol || "";
+    nameRow.appendChild(img);
+  }
 
   const balanceRaw = item?.account?.balance ?? "0";
-  const balance = document.createElement("div");
-  balance.className = "result-card__balance";
-  if (vmInfo) {
-    const formatted = formatTokenAmount(balanceRaw, vmInfo.decimals);
-    const suffix = vmInfo.symbol
-      ? ` ${vmInfo.symbol}`
-      : "";
-    balance.textContent = `Balance: ${formatted}${suffix}`;
-  } else {
-    balance.textContent = `Balance: ${balanceRaw} (quarks)`;
-  }
-  card.appendChild(balance);
+  const balanceText = vmInfo
+    ? formatTokenAmount(balanceRaw, vmInfo.decimals)
+    : `${balanceRaw} quarks`;
+  const tokenLabel = vmInfo?.name || vmInfo?.symbol || "Unknown Token";
 
-  const unlockInfo = describeUnlockState(unlockState, vmInfo, withdrawReceipt);
-  if (unlockInfo) {
-    const unlockEl = document.createElement("div");
-    unlockEl.className = `result-card__unlock result-card__unlock--${unlockInfo.status
-      .toLowerCase()
-      .replace(/\s+/g, "-")}`;
-    const status = document.createElement("span");
-    status.className = "result-card__unlock-status";
-    status.textContent = unlockInfo.status;
-    const detail = document.createElement("span");
+  const currencyText = document.createElement("div");
+  currencyText.className = "result-card__currency";
+  currencyText.textContent = `${balanceText} ${tokenLabel}`;
+  nameRow.appendChild(currencyText);
+
+  nameGroup.appendChild(nameRow);
+
+  if (unlockInfo && unlockInfo.status !== "Unlocked") {
+    const detailRow = document.createElement("div");
+    detailRow.className = "result-card__detail-row";
+
+    const dot = document.createElement("span");
+    dot.className = `result-card__status-dot result-card__status-dot--${unlockInfo.status.toLowerCase().replace(/\s+/g, "-")}`;
+    detailRow.appendChild(dot);
+
+    const detail = document.createElement("div");
     detail.className = "result-card__unlock-detail";
     detail.textContent = unlockInfo.detail;
-    unlockEl.append(status, detail);
+    detailRow.appendChild(detail);
 
-    // Offer the "Start Unlock" action when the timelock is still locked —
-    // i.e. we queried the unlock PDA and it doesn't exist yet. Once the
-    // tx lands, the PDA exists and the next search will show "Unlocking".
-    if (unlockState && !unlockState.exists) {
-      const actionBtn = document.createElement("button");
-      actionBtn.className = "btn btn--primary result-card__action";
-      actionBtn.type = "button";
-      actionBtn.textContent = "Start Unlock";
-      actionBtn.addEventListener("click", () => startUnlock(actionBtn));
-      unlockEl.appendChild(actionBtn);
-    }
-
-    card.appendChild(unlockEl);
+    nameGroup.appendChild(detailRow);
   }
 
-  if (vmInfo) {
-    const tokenLabel = vmInfo.name
-      ? `${vmInfo.name} mint (${vmInfo.decimals} decimals)`
-      : `Mint (${vmInfo.decimals} decimals)`;
-    card.appendChild(row(tokenLabel, vmInfo.mint));
+  header.appendChild(nameGroup);
+
+  if (unlockState && !unlockState.exists && vmB58) {
+    const unlockBtn = document.createElement("button");
+    unlockBtn.className = "btn btn--primary btn--icon";
+    unlockBtn.innerHTML = `<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="11" width="18" height="11" rx="2" ry="2"/><path d="M7 11V7a5 5 0 0 1 9.9-1"/></svg>`;
+    unlockBtn.title = "Start Unlock";
+    unlockBtn.addEventListener("click", () => startUnlock(unlockBtn, vmB58));
+    header.appendChild(unlockBtn);
   }
 
-  if (unlockState?.exists && unlockState?.pda) {
-    card.appendChild(row("Unlock PDA", unlockState.pda));
+  card.appendChild(header);
+
+  if (unlockInfo?.status === "Unlocked" && vmB58) {
+    const withdrawRow = document.createElement("div");
+    withdrawRow.className = "result-card__withdraw-row";
+
+    const input = document.createElement("input");
+    input.className = "result-card__dest-input";
+    input.type = "text";
+    input.placeholder = "Where do you want to withdraw your funds to?";
+    input.autocomplete = "off";
+    input.spellcheck = false;
+    withdrawRow.appendChild(input);
+
+    const sendBtn = document.createElement("button");
+    sendBtn.className = "btn btn--primary btn--icon";
+    sendBtn.title = "Withdraw";
+    sendBtn.disabled = true;
+    sendBtn.innerHTML = '<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="22" y1="2" x2="11" y2="13"/><polygon points="22 2 15 22 11 13 2 9 22 2"/></svg>';
+    withdrawRow.appendChild(sendBtn);
+
+    input.addEventListener("input", () => {
+      const val = input.value.trim();
+      let valid = false;
+      if (val) {
+        try {
+          const bytes = bs58.decode(val);
+          valid = bytes.length === 32;
+        } catch {}
+      }
+      sendBtn.disabled = !valid;
+    });
+
+    card.appendChild(withdrawRow);
   }
-
-  if (withdrawReceipt?.exists) {
-    card.appendChild(row("Withdraw receipt", withdrawReceipt.pda));
-  }
-
-  card.appendChild(row("Timelock nonce", nonceB58));
-
-  const memAccount = item?.storage?.memory?.account
-    ? addressToBase58(item.storage.memory.account)
-    : "";
-  if (memAccount) {
-    card.appendChild(row("Memory account", memAccount));
-    card.appendChild(row("Memory index", String(item.storage.memory.index ?? 0)));
-  }
-
-  if (item?.slot) card.appendChild(row("Slot", String(item.slot)));
 
   return card;
 }
 
-function row(label, value) {
-  const wrap = document.createElement("div");
-  wrap.className = "result-card__row";
-
-  const l = document.createElement("span");
-  l.className = "result-card__label";
-  l.textContent = label;
-
-  const v = document.createElement("code");
-  v.className = "result-card__value";
-  v.textContent = value;
-
-  wrap.append(l, v);
-  return wrap;
-}
+const searchErrorText = document.getElementById("search-error-text");
 
 function showError(msg) {
   if (!msg) {
     els.searchError.hidden = true;
-    els.searchError.textContent = "";
+    searchErrorText.textContent = "";
     return;
   }
-  els.searchError.textContent = msg;
+  searchErrorText.textContent = msg;
   els.searchError.hidden = false;
 }
 
-function updateSearchEnabled() {
-  const hasVm = els.vmAddress.value.trim().length > 0;
-  const hasUrl = els.indexerUrl.value.trim().length > 0;
-  els.searchBtn.disabled = !(active && hasVm && hasUrl);
-}
-
-els.vmAddress.addEventListener("input", updateSearchEnabled);
-els.indexerUrl.addEventListener("input", updateSearchEnabled);
-els.searchBtn.addEventListener("click", searchTimelocks);
-
-els.disconnectBtn.addEventListener("click", disconnect);
-
-// Some wallets (notably Solflare) inject their provider asynchronously
-// after `DOMContentLoaded`. Re-scan once the page is fully loaded so
-// late arrivals still appear in the connect list — but only if the user
-// hasn't already connected, otherwise we'd clobber the active session.
-function init() {
-  renderDisconnected(detectAvailable());
-}
-
-init();
-window.addEventListener("load", () => {
-  if (!active) init();
+els.connectBtn.addEventListener("click", async () => {
+  els.connectBtn.disabled = true;
+  els.connectBtn.textContent = "Connecting…";
+  try {
+    await connectPhantom();
+    searchTimelocks();
+  } catch (err) {
+    showError(`Connect failed: ${err.message}`);
+    els.connectBtn.disabled = false;
+    els.connectBtn.textContent = "Connect Phantom Wallet";
+  }
 });
+els.disconnectBtn.addEventListener("click", disconnect);
