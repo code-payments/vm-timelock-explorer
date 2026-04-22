@@ -9,19 +9,27 @@
   <body>
     <main>
       <section id="wallet-section" class="search-view">
-        <div class="wallet-info">
-          <div class="wallet-info__col">
-            <span class="wallet-info__label">Wallet</span>
-            <code id="public-key" class="wallet-info__value">-</code>
+        <div id="connect-view" class="connect-view">
+          <div class="connect-view__warning">
+            <svg class="result-card__info-icon" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>
+            <span>The VM Timelock Explorer requires your Access Key to work. Only enter your Access Key into websites you trust, as they will have full access to your funds. You can verify this website by looking at the Open Source code for yourself, or asking someone you trust to do so for you.</span>
           </div>
-          <div class="wallet-info__col wallet-info__col--end">
-            <span class="wallet-info__label">SOL Balance</span>
-            <span id="sol-balance" class="wallet-info__value">-</span>
-          </div>
+          <label class="connect-view__label">Access Key</label>
+          <div id="mnemonic-grid" class="mnemonic-grid"></div>
+          <button id="connect-btn" class="btn btn--primary">Connect Wallet</button>
         </div>
-        <button id="connect-btn" class="btn btn--primary">Connect Phantom Wallet</button>
 
         <div id="connected-view" hidden>
+          <div class="wallet-info">
+            <div class="wallet-info__col">
+              <span class="wallet-info__label">Wallet</span>
+              <code id="public-key" class="wallet-info__value">-</code>
+            </div>
+            <div class="wallet-info__col wallet-info__col--end">
+              <span class="wallet-info__label">SOL Balance</span>
+              <span id="sol-balance" class="wallet-info__value">-</span>
+            </div>
+          </div>
           <div id="low-balance-warning" class="result-card result-card--info" hidden>
             <div class="result-card__info-row">
               <svg class="result-card__info-icon" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><line x1="12" y1="16" x2="12" y2="12"/><line x1="12" y1="8" x2="12.01" y2="8"/></svg>
@@ -38,7 +46,11 @@
       {
         "imports": {
           "@solana/web3.js": "https://esm.sh/@solana/web3.js@1.95.4",
-          "bs58": "https://esm.sh/bs58@6.0.0"
+          "bs58": "https://esm.sh/bs58@6.0.0",
+          "@scure/bip39": "https://esm.sh/@scure/bip39@1.4.0",
+          "@scure/bip39/wordlists/english": "https://esm.sh/@scure/bip39@1.4.0/wordlists/english",
+          "@noble/hashes/hmac": "https://esm.sh/@noble/hashes@1.4.0/hmac",
+          "@noble/hashes/sha512": "https://esm.sh/@noble/hashes@1.4.0/sha512"
         }
       }
     </script>

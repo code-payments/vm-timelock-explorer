@@ -96,6 +96,86 @@ main {
 
 
 
+.connect-view {
+  display: flex;
+  flex-direction: column;
+  gap: 0.625rem;
+}
+
+.connect-view__label {
+  font-size: 0.8125rem;
+  font-weight: 600;
+  color: var(--text-dim);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.mnemonic-grid {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 0.5rem;
+}
+
+.mnemonic-word-cell {
+  display: flex;
+  align-items: center;
+  gap: 0.45rem;
+  padding: 0.5rem 0.6rem;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--surface);
+  min-width: 0;
+}
+
+.mnemonic-word-cell:focus-within {
+  border-color: var(--accent);
+}
+
+.mnemonic-word-num {
+  color: var(--text-dim);
+  font-family: var(--mono);
+  font-size: 0.75rem;
+  flex-shrink: 0;
+  min-width: 1.1rem;
+  text-align: right;
+  user-select: none;
+}
+
+.mnemonic-word {
+  flex: 1;
+  min-width: 0;
+  padding: 0;
+  border: none;
+  background: transparent;
+  color: var(--text);
+  font-family: var(--mono);
+  font-size: 0.9rem;
+  outline: none;
+}
+
+@media (max-width: 520px) {
+  .mnemonic-grid {
+    grid-template-columns: repeat(2, 1fr);
+  }
+}
+
+.connect-view__warning {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.5rem;
+  padding: 0.625rem 0.75rem;
+  border: 1px solid rgba(255, 209, 102, 0.27);
+  border-radius: 8px;
+  background: rgba(255, 209, 102, 0.06);
+  color: #ffd166;
+  font-size: 0.8rem;
+  line-height: 1.45;
+}
+
+.connect-view__warning .result-card__info-icon {
+  margin-top: 2px;
+}
+
 .btn {
   display: inline-flex;
   align-items: center;

@@ -4,21 +4,56 @@ import {
   TransactionInstruction,
   SystemProgram,
   SYSVAR_RENT_PUBKEY,
+  Keypair,
 } from "@solana/web3.js";
 import bs58 from "bs58";
+import { validateMnemonic, mnemonicToSeed } from "@scure/bip39";
+import { wordlist as bip39English } from "@scure/bip39/wordlists/english";
+import { hmac } from "@noble/hashes/hmac";
+import { sha512 } from "@noble/hashes/sha512";
 
-function getPhantomProvider() {
-  const p = window.phantom?.solana;
-  if (p?.isPhantom) return p;
-  if (window.solana?.isPhantom) return window.solana;
-  return null;
+// Solana's standard BIP44 derivation path — matches what Phantom, Solflare,
+// and the `solana-keygen` CLI use for the first account from a seed phrase.
+const SOLANA_DERIVATION_PATH = "m/44'/501'/0'/0'";
+const SLIP10_ED25519_HMAC_KEY = new TextEncoder().encode("ed25519 seed");
+const SLIP10_HARDENED_OFFSET = 0x80000000;
+
+// SLIP-0010 Ed25519 derivation. Ed25519 supports hardened-only derivation,
+// so every path segment must end with `'`. Returns the 32-byte seed for
+// `Keypair.fromSeed`.
+function deriveSlip10Ed25519(masterSeed, path) {
+  let I = hmac(sha512, SLIP10_ED25519_HMAC_KEY, masterSeed);
+  let key = I.slice(0, 32);
+  let chainCode = I.slice(32);
+
+  for (const seg of path.split("/").slice(1)) {
+    if (!seg.endsWith("'")) {
+      throw new Error(`SLIP-0010 ed25519 requires hardened segments; got "${seg}"`);
+    }
+    const index = (parseInt(seg.slice(0, -1), 10) >>> 0) + SLIP10_HARDENED_OFFSET;
+    const data = new Uint8Array(1 + 32 + 4);
+    data[0] = 0;
+    data.set(key, 1);
+    data[33] = (index >>> 24) & 0xff;
+    data[34] = (index >>> 16) & 0xff;
+    data[35] = (index >>> 8) & 0xff;
+    data[36] = index & 0xff;
+    I = hmac(sha512, chainCode, data);
+    key = I.slice(0, 32);
+    chainCode = I.slice(32);
+  }
+  return key;
 }
 
 const INDEXER_URL = "https://vm-indexer.flipcash.com:443";
 const RPC_URL = "https://solana-rpc.flipcash.com";
 
+const MNEMONIC_WORD_COUNT = 12;
+
 const els = {
   connectBtn: document.getElementById("connect-btn"),
+  connectView: document.getElementById("connect-view"),
+  mnemonicGrid: document.getElementById("mnemonic-grid"),
   connectedView: document.getElementById("connected-view"),
   publicKey: document.getElementById("public-key"),
   solBalance: document.getElementById("sol-balance"),
@@ -27,43 +62,116 @@ const els = {
   disconnectBtn: document.getElementById("disconnect-btn"),
 };
 
-let active = null; // { provider, publicKey }
-let solBalanceTimer = null;
-let currentLamports = null;
+function getMnemonicInputs() {
+  return els.mnemonicGrid.querySelectorAll(".mnemonic-word");
+}
 
-async function connectPhantom() {
-  const provider = getPhantomProvider();
-  if (!provider) {
-    throw new Error(
-      "Phantom wallet not detected. Install it from phantom.app to continue.",
-    );
+function readMnemonic() {
+  return Array.from(getMnemonicInputs())
+    .map((i) => i.value.trim().toLowerCase())
+    .join(" ");
+}
+
+function clearMnemonicInputs() {
+  getMnemonicInputs().forEach((i) => {
+    i.value = "";
+  });
+}
+
+function focusMnemonicInput(idx) {
+  const inputs = getMnemonicInputs();
+  const clamped = Math.max(0, Math.min(inputs.length - 1, idx));
+  inputs[clamped]?.focus();
+  inputs[clamped]?.select?.();
+}
+
+function onMnemonicPaste(e) {
+  const text = (e.clipboardData || window.clipboardData)?.getData("text") ?? "";
+  const words = text.trim().toLowerCase().split(/\s+/).filter(Boolean);
+  if (words.length < 2) return; // single word paste: default behavior
+  e.preventDefault();
+  const inputs = getMnemonicInputs();
+  for (let i = 0; i < inputs.length; i++) {
+    inputs[i].value = words[i] ?? "";
   }
+  focusMnemonicInput(Math.min(words.length, inputs.length) - 1);
+}
 
-  const resp = await provider.connect();
-  const publicKey = resp?.publicKey ?? provider.publicKey;
-  if (!publicKey) throw new Error("No public key returned by wallet");
+function onMnemonicKeydown(e) {
+  const input = e.target;
+  const idx = Number(input.dataset.index);
 
-  active = { provider, publicKey: publicKey.toString() };
-  showConnectedView();
-
-  if (typeof provider.on === "function") {
-    provider.on("disconnect", () => {
-      active = null;
-      showConnectView();
-    });
-    provider.on("accountChanged", (pk) => {
-      if (pk) {
-        active = { provider, publicKey: pk.toString() };
-      } else {
-        active = null;
-        showConnectView();
-      }
-    });
+  if ((e.key === " " || e.key === "Enter") && !e.shiftKey) {
+    if (e.key === "Enter" && idx === MNEMONIC_WORD_COUNT - 1 && input.value.trim() !== "") {
+      e.preventDefault();
+      els.connectBtn.click();
+      return;
+    }
+    if (input.value.trim() !== "") {
+      e.preventDefault();
+      focusMnemonicInput(idx + 1);
+    } else if (e.key === " ") {
+      e.preventDefault();
+    }
+  } else if (e.key === "Backspace" && input.value === "" && idx > 0) {
+    e.preventDefault();
+    focusMnemonicInput(idx - 1);
   }
 }
 
+function renderMnemonicInputs() {
+  const grid = els.mnemonicGrid;
+  grid.replaceChildren();
+  for (let i = 0; i < MNEMONIC_WORD_COUNT; i++) {
+    const cell = document.createElement("div");
+    cell.className = "mnemonic-word-cell";
+
+    const num = document.createElement("span");
+    num.className = "mnemonic-word-num";
+    num.textContent = `${i + 1}`;
+    cell.appendChild(num);
+
+    const input = document.createElement("input");
+    input.type = "text";
+    input.className = "mnemonic-word";
+    input.dataset.index = String(i);
+    input.autocomplete = "off";
+    input.autocapitalize = "off";
+    input.spellcheck = false;
+    input.addEventListener("paste", onMnemonicPaste);
+    input.addEventListener("keydown", onMnemonicKeydown);
+    cell.appendChild(input);
+
+    grid.appendChild(cell);
+  }
+}
+
+let active = null; // { keypair, publicKey }
+let solBalanceTimer = null;
+let currentLamports = null;
+
+async function connectWithMnemonic(rawMnemonic) {
+  const mnemonic = rawMnemonic.trim().toLowerCase().split(/\s+/).filter(Boolean).join(" ");
+  if (!mnemonic) {
+    throw new Error("Please enter your Access Key.");
+  }
+  if (mnemonic.split(" ").length !== MNEMONIC_WORD_COUNT) {
+    throw new Error(`Access Key must be ${MNEMONIC_WORD_COUNT} words.`);
+  }
+  if (!validateMnemonic(mnemonic, bip39English)) {
+    throw new Error("Invalid Access Key. Please check the words and try again.");
+  }
+
+  const seed = await mnemonicToSeed(mnemonic);
+  const derivedSeed = deriveSlip10Ed25519(seed, SOLANA_DERIVATION_PATH);
+  const keypair = Keypair.fromSeed(derivedSeed);
+
+  active = { keypair, publicKey: keypair.publicKey.toBase58() };
+  showConnectedView();
+}
+
 function showConnectedView() {
-  els.connectBtn.hidden = true;
+  els.connectView.hidden = true;
   els.connectedView.hidden = false;
   els.publicKey.textContent = active.publicKey;
   els.solBalance.textContent = "-";
@@ -119,9 +227,10 @@ function showConnectView() {
   currentLamports = null;
   els.lowBalanceWarning.hidden = true;
   els.connectedView.hidden = true;
-  els.connectBtn.hidden = false;
+  els.connectView.hidden = false;
   els.connectBtn.disabled = false;
-  els.connectBtn.textContent = "Connect Phantom Wallet";
+  els.connectBtn.textContent = "Connect Wallet";
+  clearMnemonicInputs();
   els.publicKey.textContent = "-";
   els.solBalance.textContent = "-";
   els.results.hidden = true;
@@ -130,13 +239,8 @@ function showConnectView() {
   clearSuccess();
 }
 
-async function disconnect() {
+function disconnect() {
   if (!active) return;
-  try {
-    await active.provider.disconnect?.();
-  } catch (err) {
-    console.warn("Disconnect error:", err);
-  }
   active = null;
   showConnectView();
 }
@@ -601,12 +705,9 @@ async function startUnlock(btn, vmAddress) {
     tx.feePayer = new PublicKey(ownerB58);
     tx.recentBlockhash = blockhash;
 
-    if (typeof active.provider.signTransaction !== "function") {
-      throw new Error("wallet does not support signTransaction");
-    }
-    const signed = await active.provider.signTransaction(tx);
+    tx.sign(active.keypair);
 
-    const serialized = signed.serialize();
+    const serialized = tx.serialize();
     const b64 = bytesToBase64(new Uint8Array(serialized));
     const signature = await rpcCall(rpcUrl, "sendTransaction", [
       b64,
@@ -704,12 +805,9 @@ async function startWithdraw(btn, input, vmAddress, item, vmInfo, unlockState) {
     tx.feePayer = new PublicKey(ownerB58);
     tx.recentBlockhash = blockhash;
 
-    if (typeof active.provider.signTransaction !== "function") {
-      throw new Error("wallet does not support signTransaction");
-    }
-    const signed = await active.provider.signTransaction(tx);
+    tx.sign(active.keypair);
 
-    const serialized = signed.serialize();
+    const serialized = tx.serialize();
     const b64 = bytesToBase64(new Uint8Array(serialized));
     const signature = await rpcCall(rpcUrl, "sendTransaction", [
       b64,
@@ -1211,7 +1309,7 @@ function showError(msg) {
   if (header) {
     header.before(banner);
   } else {
-    els.connectBtn.before(banner);
+    els.connectView.prepend(banner);
   }
 }
 
@@ -1235,15 +1333,19 @@ function showSuccess(msg) {
 }
 
 els.connectBtn.addEventListener("click", async () => {
+  const mnemonic = readMnemonic();
+  showError(null);
   els.connectBtn.disabled = true;
   els.connectBtn.textContent = "Connecting…";
   try {
-    await connectPhantom();
+    await connectWithMnemonic(mnemonic);
+    clearMnemonicInputs();
     searchTimelocks();
   } catch (err) {
     showError(`Connect failed: ${err.message}`);
     els.connectBtn.disabled = false;
-    els.connectBtn.textContent = "Connect Phantom Wallet";
+    els.connectBtn.textContent = "Connect Wallet";
   }
 });
 els.disconnectBtn.addEventListener("click", disconnect);
+renderMnemonicInputs();
