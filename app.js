@@ -14,7 +14,7 @@ function getPhantomProvider() {
   return null;
 }
 
-const INDEXER_URL = "http://localhost:8086";
+const INDEXER_URL = "https://vm-indexer.flipcash.com:443";
 const RPC_URL = "https://solana-rpc.flipcash.com";
 
 const els = {
