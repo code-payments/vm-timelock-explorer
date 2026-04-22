@@ -41,6 +41,7 @@ main {
 
 
 #wallet-section {
+  position: relative;
   background: var(--surface);
   border: 1px solid var(--border);
   border-radius: 12px;
@@ -53,6 +54,25 @@ main {
   font-weight: 600;
   color: #fff;
   text-align: center;
+}
+
+.github-link {
+  position: absolute;
+  top: 1.5rem;
+  right: 1.5rem;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 1.875rem;
+  height: 1.875rem;
+  border-radius: 50%;
+  color: var(--text-dim);
+  transition: color 0.15s, background 0.15s;
+}
+
+.github-link:hover {
+  color: var(--text);
+  background: var(--surface-2);
 }
 
 
